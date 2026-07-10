@@ -1,6 +1,6 @@
 # golang-cms — Business Rules
 
-**Version:** 1.0 · **Last Updated:** 2026-07-07 · **Owner:** Miraj Aryal
+**Version:** 1.1 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
 
 This manual defines the non-negotiable invariants of golang-cms. Every rule states the invariant first, then the exact enforcement point in code. Implementation, review, and tests must trace to these identifiers (see Rule-to-Code Traceability). Rules tagged **(V2)** or **(V3)** bind from that version onward; untagged rules bind from V1. Rules tagged **[structural]** hold by construction (the enforcing code path is the only path that exists) and are exempt from the test-name trace.
 
@@ -16,10 +16,12 @@ This manual defines the non-negotiable invariants of golang-cms. Every rule stat
   *Enforcement:* `middleware.RateLimit` — in-memory token buckets keyed by email and client IP.
 - **BR-RUNTIME-5.** Background work (retention, scheduled publishing) runs as in-process goroutine tickers.
   *Enforcement:* `jobs.Scheduler` — the only background-execution entry point.
-- **BR-RUNTIME-6.** Shutdown drains in-flight requests within a 15-second window before exit; the drain drops zero accepted requests.
+- **BR-RUNTIME-6.** Shutdown drains in-flight requests within a 15-second window; requests completing within the window are never dropped; requests exceeding it are force-closed, logged, and counted.
   *Enforcement:* `app.Run` — `http.Server.Shutdown` with a 15-second context.
 - **BR-RUNTIME-7.** The in-memory schema cache reloads before the schema-change advisory lock releases; a request served after a schema change never sees stale metadata.
   *Enforcement:* `schema.Engine.Apply` — cache reload precedes lock release.
+- **BR-RUNTIME-8.** Exactly one process serves at a time: before opening the listener, the binary acquires a process-lifetime advisory lock (session-scoped, distinct from the migration and schema keys); a second process fails startup with a clear log line. *(Resolves EC-16.)*
+  *Enforcement:* `app.Run` — `pg_advisory_lock` on the instance key, held until exit.
 
 ## 2. Schema Engine
 
@@ -35,7 +37,7 @@ This manual defines the non-negotiable invariants of golang-cms. Every rule stat
   *Enforcement:* `schema.Engine.planTypeChange`.
 - **BR-SCHEMA-6.** Every schema change runs inside one transaction holding `pg_advisory_xact_lock`; the DDL statement and the `cms_collections`/`cms_fields` metadata update commit atomically. *(Resolves EC-1.)*
   *Enforcement:* `schema.Engine.Apply` — single-transaction execution.
-- **BR-SCHEMA-7.** Destructive schema changes (DROP COLUMN, dropping a collection) require re-authentication within the 4-hour window plus typed confirmation of the target slug. Dropping a field removes live values while `cms_revisions` snapshots retain the dropped data. *(Resolves EC-2.)*
+- **BR-SCHEMA-7.** Destructive schema changes (DROP COLUMN, dropping a collection) require re-authentication within the 4-hour window plus typed confirmation of the target slug. Dropping a field removes live values while `cms_revisions` snapshots retain the dropped data. Dropping a collection deletes its table, its `cms_fields` rows, and its entire `cms_revisions` history in one transaction; the typed confirmation states this explicitly. (Field drops retain revision data; collection drops do not — the asymmetry is deliberate.) *(Resolves EC-2.)*
   *Enforcement:* `middleware.RequireRecentAuth` + `httpapi/admin` confirmation validator; retention via JSONB snapshots in `lifecycle.Service.Save`.
 - **BR-SCHEMA-8.** System column names (`id`, `status`, `version`, `created_at`, `updated_at`, `created_by`, `deleted_at`) are reserved and rejected as field slugs.
   *Enforcement:* `httpapi/admin.validateSlug` blocklist.
@@ -54,11 +56,11 @@ This manual defines the non-negotiable invariants of golang-cms. Every rule stat
   *Enforcement:* Postgres FK RESTRICT constraints + `lifecycle.Service.Restore` unique-violation mapping.
 - **BR-LIFE-6.** Publishing a record whose relation targets a draft or trashed record succeeds; the public API resolves such references to `null` and omits the targets. *(Resolves EC-7.)*
   *Enforcement:* `query.Builder` relation join predicate — `status = 'published' AND deleted_at IS NULL`.
-- **BR-LIFE-7.** Record updates require the current `version` value; a mismatch returns `409 Conflict` and writes nothing.
+- **BR-LIFE-7.** Record updates require the current `version` value; a mismatch returns `409 Conflict` and writes nothing. Every save advances the live row's `version` and `updated_at` via compare-and-set — including saves that create pending drafts; for published records the content columns remain frozen until publish.
   *Enforcement:* `lifecycle.Service.Save` — compare-and-set `WHERE version = $expected`.
 - **BR-LIFE-8.** The retention job purges trash older than `CMS_TRASH_RETENTION_DAYS` and prunes revisions beyond `CMS_REVISION_LIMIT` per record, oldest first. Pruning never removes the currently published revision.
   *Enforcement:* `jobs.Retention` — pruning query excludes the published `version_no`.
-- **BR-LIFE-9 (V2).** Scheduled publishing fires within 60 seconds of `publish_at`; on startup the system publishes every record whose `publish_at` elapsed during downtime. *(Resolves EC-13.)*
+- **BR-LIFE-9 (V2).** Scheduled publishing fires within 60 seconds of `publish_at`; the publisher's first tick, immediately after the listener opens, publishes every record whose `publish_at` elapsed during downtime. *(Resolves EC-13.)*
   *Enforcement:* `jobs.Publisher` ticker + startup catch-up scan in `app.Run`.
 
 ## 4. Authentication
@@ -81,10 +83,14 @@ This manual defines the non-negotiable invariants of golang-cms. Every rule stat
   *Enforcement:* `auth.JWTService.Issue` (claims shape) + `access.Evaluator.Decide` per request.
 - **BR-AUTH-9.** Refreshing rotates both tokens. Presenting an already-rotated refresh token revokes the entire token family and returns `401`. *(Resolves EC-8.)*
   *Enforcement:* `auth.JWTService.Refresh` — family check precedes issuance.
-- **BR-AUTH-10.** The RSA-2048 keypair persists in `cms_system_keys` (the system-table form of the auth specification's `system_keys`); the system auto-generates it when `JWT_PRIVATE_KEY` is absent.
+- **BR-AUTH-10.** The RSA-2048 keypair persists in `cms_system_keys` (the system-table form of the auth specification's `system_keys`); the system auto-generates it when `JWT_PRIVATE_KEY` is absent. The stored `private_pem` is AES-256-GCM ciphertext under an HKDF key derived from `CMS_MASTER_SECRET`; `public_pem` remains plaintext. Issued JWTs carry a `kid` header naming the signing key row.
   *Enforcement:* `auth.Keys.Load` at startup.
-- **BR-AUTH-11.** When `cms_users` is empty at startup, the system logs a single-use setup token and enables `/setup`; consuming it creates the first super admin and disables the route. The token dies on use or process exit.
+- **BR-AUTH-11.** When `cms_users` is empty at startup, the system logs a single-use setup token and enables `/setup`; consuming it creates the first super admin and disables the route. The token dies on use, after 30 minutes, or on process exit.
   *Enforcement:* `auth.Bootstrap` at startup + the `/setup` handler.
+- **BR-AUTH-12.** When `CMS_RECOVERY_EMAIL` names an existing `cms_users` row at startup, the system generates a 256-bit single-use recovery token, logs it once at `warn`, and enables `/recover`; consuming it resets that user's password and revokes their sessions. The token dies on use, after 30 minutes, or on process exit; the route returns 404 otherwise.
+  *Enforcement:* `auth.Recovery` at startup + the `/recover` handler.
+- **BR-AUTH-13.** Password-reset tokens store hashed, expire in 30 minutes, and are single-use; confirmation revokes every refresh-token family of the affected user. The binary never sends email; delivery belongs to the consuming application.
+  *Enforcement:* `auth.ResetService` + `cms_reset_tokens`.
 
 ## 5. Access Control
 
@@ -92,14 +98,16 @@ This manual defines the non-negotiable invariants of golang-cms. Every rule stat
   *Enforcement:* CHECK constraint on `cms_users.role` + `access` package constants.
 - **BR-RBAC-2.** Per-collection access rules live as JSONB config for `read`, `create`, `update`, `delete`; the evaluator returns `Decision{Allowed, Predicate}` and every collection handler calls it before building a query.
   *Enforcement:* `access.Evaluator.Decide` — handlers receive the query builder only through `query.Builder.WithDecision`.
-- **BR-RBAC-3.** A missing access rule denies. No default-allow path exists.
+- **BR-RBAC-3.** A missing access rule denies for the governed classes (`editor`, `contributor`, `viewer`, `end_user`, `anonymous`). `super_admin` and `admin` hold an implicit full grant on content actions; no other default-allow path exists.
   *Enforcement:* `access.Evaluator.Decide` default branch.
-- **BR-RBAC-4.** Field-level rules `hideFromRoles` and `readOnlyForRoles` apply on both read serialization and write validation.
+- **BR-RBAC-4.** Field-level rules `hideFrom` and `readOnlyFor` apply on both read serialization and write validation. Audience lists draw from the closed set: the five roles plus `end_user`, `anonymous`, `api_key`.
   *Enforcement:* `content.Document.Set` (writes) + the response serializer (reads).
 - **BR-RBAC-5.** Mass assignment is impossible: every write passes through `content.Document.Set`, which drops unknown fields and rejects role-read-only fields against the cached schema.
   *Enforcement:* `content.Document.Set` — the only write path into collection tables.
 - **BR-RBAC-6.** Row-scope predicates (e.g., `ownerOnly`) compile into every list and read query for the deciding role.
   *Enforcement:* `query.Builder.WithDecision` — appends the `Decision.Predicate`.
+- **BR-RBAC-7.** Access-rule objects conform to the closed grant-matrix schema of `docs/architecture/12-access-rules.md`; writes violating it fail with `422`, and rules failing validation at evaluation time deny (fail closed, N-11).
+  *Enforcement:* `httpapi/admin` rule validator + `access.Evaluator` fail-closed branch.
 
 ## 6. Media
 
@@ -114,12 +122,16 @@ This manual defines the non-negotiable invariants of golang-cms. Every rule stat
 
 ## 7. API Conduct
 
-- **BR-API-1.** List endpoints clamp `limit` to 100 (default 25), always append the stable `id` tiebreaker sort, and reject `offset` greater than 10,000 with `400`. *(Resolves EC-11.)*
+- **BR-API-1.** List endpoints clamp `limit` to 100 (default 25), always append the stable `id` tiebreaker sort, and reject `offset` greater than 10,000 with `422 validation_failed`. *(Resolves EC-11.)*
   *Enforcement:* `httpapi.ParsePagination` — shared by all list handlers.
 - **BR-API-2.** Public and API-key reads return only published, non-trashed records unless the key scope explicitly grants draft access.
   *Enforcement:* `query.Builder` public-scope base predicate.
 - **BR-API-3.** Every error response uses the shared envelope `{"error": {"code", "message", "details"}}`.
   *Enforcement:* `httpapi.WriteError` — the only error-writing function.
+- **BR-API-4.** Public-scope list queries accept `filter`/`sort` only on fields marked `indexed` or `unique`; violations return `422` naming the field. Admin and trash scopes accept any schema field.
+  *Enforcement:* `query.Builder` scope-aware field validation.
+- **BR-API-5.** Anonymous public reads carry `Cache-Control: public, s-maxage=60, stale-while-revalidate=60` and a strong `ETag`; any request bearing `Authorization` or a cookie receives `Cache-Control: no-store` without exception.
+  *Enforcement:* `httpapi` response headers on public routes.
 
 ## 8. Audit
 
@@ -135,7 +147,7 @@ This manual defines the non-negotiable invariants of golang-cms. Every rule stat
 | Variable | Default | Purpose |
 |---|---|---|
 | `DATABASE_URL` | — | PostgreSQL connection string. |
-| `CMS_SESSION_SECRET` | — | Cookie signing entropy. |
+| `CMS_MASTER_SECRET` | — | Root secret for at-rest encryption of system key material (BR-AUTH-10). |
 | `JWT_PRIVATE_KEY` | Auto-generated | RSA-2048 PEM for RS256. |
 | `JWT_PUBLIC_KEY` | Derived from private | RS256 public verification. |
 | `S3_ENDPOINT` | — | S3-compatible API endpoint. |
@@ -144,6 +156,8 @@ This manual defines the non-negotiable invariants of golang-cms. Every rule stat
 | `S3_SECRET_KEY` | — | S3-compatible Secret Access Key (R2 Secret). |
 | `R2_ACCOUNT_ID` | — | Cloudflare R2 Account ID (required when using R2). |
 | `R2_PUBLIC_BUCKET_URL` | — | Public custom domain or dev URL for direct asset delivery. |
+| `CMS_RECOVERY_EMAIL` | unset | When set at startup, enables single-use super-admin recovery (BR-AUTH-12). |
+| `CMS_TRUSTED_PROXY_CIDRS` | empty | Peers within these CIDRs are trusted to append `X-Forwarded-For` (05 §5). |
 | `CMS_PORT` | `8080` | HTTP server bind port. |
 | `CMS_LOG_LEVEL` | `info` | `slog` level (debug, info, warn, error). |
 | `CMS_TRASH_RETENTION_DAYS` | `30` | Days a trashed record persists before auto-purge. |
@@ -159,7 +173,7 @@ This manual defines the non-negotiable invariants of golang-cms. Every rule stat
 | EC-8 | BR-AUTH-9 |
 | EC-11 | BR-API-1 |
 
-(BR-SCHEMA-5, BR-SCHEMA-6, BR-LIFE-9, and BR-MEDIA-2 additionally resolve EC-3, EC-1, EC-13, and EC-9.)
+(BR-SCHEMA-5, BR-SCHEMA-6, BR-LIFE-9, and BR-MEDIA-2 additionally resolve EC-3, EC-1, EC-13, and EC-9. BR-RUNTIME-8 resolves EC-16.)
 
 ## Rule-to-Code Traceability
 
