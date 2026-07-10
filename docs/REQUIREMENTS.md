@@ -1,6 +1,6 @@
 # golang-cms — Requirements
 
-**Version:** 1.0 · **Last Updated:** 2026-07-07 · **Owner:** Miraj Aryal
+**Version:** 1.1 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
 
 This document defines what golang-cms delivers, for whom, and how delivery is verified. Functional requirements carry version tags; the system ships in three releases (V1 MVP, V2 Polish & Search, V3 Commerce & Video). Invariant-level rules live in `BUSINESS_RULES.md`; this document references them rather than restating them.
 
@@ -25,7 +25,7 @@ golang-cms is a headless, config-driven CMS delivered as a single Go binary serv
 ### Version 1 — MVP
 
 - **F-1 (V1).** Super Admins and Admins create, rename, and delete collections at runtime; each collection materializes as a real Postgres table with the seven system columns.
-- **F-2 (V1).** Collections support exactly eight field types: `text`, `richText`, `number`, `boolean`, `datetime`, `media`, `relation`, `json`, with the storage mapping defined in the prompt's field-type reference.
+- **F-2 (V1).** Collections support exactly eight field types: `text`, `richText`, `number`, `boolean`, `datetime`, `media`, `relation`, `json`, with the storage mapping defined in `docs/architecture/07-data-model.md`.
 - **F-3 (V1).** Schema changes execute only whitelisted DDL operations; field type changes succeed only within the safe-conversion matrix; destructive changes demand recent re-authentication and typed confirmation. *(Resolves EC-2 via BR-SCHEMA-7.)*
 - **F-4 (V1).** Record writes validate against the cached schema through `Document.Set`; unknown fields drop, role-read-only fields reject.
 - **F-5 (V1).** Every record write produces a revision; the admin UI lists revisions, compares any two, and restores any revision as a new head.
@@ -38,9 +38,10 @@ golang-cms is a headless, config-driven CMS delivered as a single Go binary serv
 - **F-12 (V1).** Per-collection access rules (read/create/update/delete) with row predicates (e.g., `ownerOnly`) and field-level visibility (`hideFromRoles`, `readOnlyForRoles`) gate every request; missing rules deny.
 - **F-13 (V1).** Media uploads flow directly to object storage via presigned PUT URLs with size caps; the binary finalizes media records and serves delivery URLs.
 - **F-14 (V1).** The embedded admin UI covers schema building, content editing with Tiptap rich text (stored as JSONB), revision management, trash, user/key management, and access-rule editing.
-- **F-15 (V1).** List endpoints paginate with capped limit/offset and a stable sort; excessive offsets reject. *(Resolves EC-11 via BR-API-1.)*
-- **F-16 (V1).** Every mutation emits an audit event through the audit interface; the V1 sink is structured logging.
+- **F-15 (V1).** List endpoints paginate with capped limit/offset and a stable sort; excessive offsets reject. *(Resolves EC-11 via BR-API-1.)* Admin lists additionally support keyset cursor pagination from V1.
+- **F-16 (V1).** Every mutation emits an audit event through the audit interface; the V1 sink is structured logging. V1 audit durability equals shipped stdout logs; queryable persistence arrives in V2 (accepted limitation).
 - **F-17 (V1).** The binary runs embedded system-table migrations automatically at startup under an advisory lock.
+- **F-32 (V1).** Account recovery and password reset: env-gated super-admin recovery mode (BR-AUTH-12); admin-issued one-time reset tokens; end-user reset via API-key-gated request plus public confirm, revoking all refresh-token families on success (BR-AUTH-13). The binary never sends email.
 
 ### Version 2 — Polish & Search
 
@@ -53,7 +54,8 @@ golang-cms is a headless, config-driven CMS delivered as a single Go binary serv
 - **F-24 (V2).** Audit events persist to `cms_audit_log` with an admin UI for filtering by actor, action, entity, and time.
 - **F-25 (V2).** Schema export/import and content export are first-class; content import is best-effort with documented limitations (ID collisions, relation remapping, media references).
 - **F-26 (V2).** Records publish automatically at `publish_at`; missed schedules publish at next startup. *(Resolves EC-13 via BR-LIFE-9.)*
-- **F-27 (V2).** The public API adds keyset cursor pagination alongside capped offset pagination.
+- **F-27 (V2).** The public API exposes the V1 keyset-cursor mechanism alongside capped offset pagination.
+- **F-33 (V2).** GDPR-class erasure: end-user hard delete with token-family revocation, `created_by` anonymization to a tombstone UUID, and a revision-redaction capability in the retention job, with documented limitations.
 
 ### Version 3 — Commerce & Video
 
@@ -75,6 +77,8 @@ golang-cms is a headless, config-driven CMS delivered as a single Go binary serv
 - **N-9.** Revision history and trash respect the `CMS_REVISION_LIMIT` and `CMS_TRASH_RETENTION_DAYS` bounds; the database schema remains restorable by plain `pg_dump`/`pg_restore` with no non-bundled extensions.
 - **N-10.** CI enforces Rule-to-Code traceability: every non-structural BR identifier maps to at least one named test.
 - **N-11.** The system fails closed: on schema-cache or access-rule load failure, affected requests return errors rather than serving stale or permissive results.
+- **N-12.** RPO ≤ 5 minutes and RTO ≤ 1 hour via WAL-based point-in-time recovery; scheduled `pg_dump` remains the portable second copy; a restore drill precedes V1 release.
+- **N-13.** The service is single-instance: upgrades cost drain-plus-startup downtime and the availability class is ~99.5%; high availability is out of scope.
 
 ## 5. Out of Scope
 
@@ -100,6 +104,7 @@ golang-cms is a headless, config-driven CMS delivered as a single Go binary serv
 - **UAC-1.3.** An Editor edits a published record producing a pending draft — the public API continues serving the published content unchanged — then republishes; the revision list shows both versions, a compare renders the differences, and restoring the older revision creates a new head without rewriting history.
 - **UAC-1.4.** Deleting a published record removes it from every list, read, search, and relation resolution; restoring returns it intact; a concurrent update presenting a stale `version` receives `409 Conflict` and changes nothing.
 - **UAC-1.5.** A client requests a presigned URL, uploads a file directly to storage, finalizes the media record, and attaches it to a `media` field; separately, an End User logs in, refreshes tokens once, then replays the old refresh token and receives `401` with the whole token family revoked.
+- **UAC-1.6.** An API consumer whose key carries `passwordReset` requests a reset for an end user and receives a token; confirmation sets the new password and revokes every refresh-token family; separately, a recovery-mode start (`CMS_RECOVERY_EMAIL`) logs a single-use token that resets a locked-out super admin and dies on use.
 
 ### Version 2
 
