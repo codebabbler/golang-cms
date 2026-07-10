@@ -96,7 +96,7 @@ This manual defines the non-negotiable invariants of golang-cms. Every rule stat
 
 - **BR-RBAC-1.** Exactly five roles exist: `super_admin`, `admin`, `editor`, `contributor`, `viewer`.
   *Enforcement:* CHECK constraint on `cms_users.role` + `access` package constants.
-- **BR-RBAC-2.** Per-collection access rules live as JSONB config for `read`, `create`, `update`, `delete`; the evaluator returns `Decision{Allowed, Predicate}` and every collection handler calls it before building a query.
+- **BR-RBAC-2.** Per-collection access rules live as JSONB config for `read`, `create`, `update`, `delete`, `publish`; the evaluator returns `Decision{Allowed, Predicate}` and every collection handler calls it before building a query.
   *Enforcement:* `access.Evaluator.Decide` — handlers receive the query builder only through `query.Builder.WithDecision`.
 - **BR-RBAC-3.** A missing access rule denies for the governed classes (`editor`, `contributor`, `viewer`, `end_user`, `anonymous`). `super_admin` and `admin` hold an implicit full grant on content actions; no other default-allow path exists.
   *Enforcement:* `access.Evaluator.Decide` default branch.

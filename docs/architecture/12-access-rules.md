@@ -63,7 +63,7 @@ These three examples fix the schema's intended usage; an implementation that can
 
 Each principal class is resolved by exactly one of steps 1–5; the numbering is evaluation order, not a priority among rules that could simultaneously apply within one class. `Decision.Predicate` compiles into the query via `query.Builder.WithDecision` (BR-RBAC-6).
 
-For `action = publish`, step 2 is bounded below by the floor in §1: no `minRole`/`minRoleOwn` combination admits a role below `editor`, and `end_user`, `anonymous`, and `api_key` principals never receive `publish` (BR-LIFE-3).
+For `action = publish`, step 2 is bounded below by the floor in §1: no `minRole`/`minRoleOwn` combination admits a role below `editor`, and `end_user`, `anonymous`, and `api_key` principals never receive `publish` (BR-LIFE-3). Unpublish evaluates as the `publish` action — BR-LIFE-3 governs both.
 
 ## 4. Validation and Fail-Closed Reads (BR-RBAC-7)
 
@@ -78,11 +78,15 @@ For `action = publish`, step 2 is bounded below by the floor in §1: no `minRole
 
 **Fail-closed at read (N-11):** rules that fail to parse at evaluation time deny. A malformed `access_rules` value never falls back to permissive behavior — `access.Evaluator.Decide` returns `Decision{Allowed: false}` for every request against that collection until an admin corrects the rule.
 
+Grants on `publish` for `endUsers`, `anonymous`, or `minRoleOwn` below `editor` are accepted but inert: the §3 floor denies them.
+
 ## 5. Field-Rule Audiences (BR-RBAC-4)
 
 Field-level rules `hideFrom` and `readOnlyFor` — renamed from `hideFromRoles`/`readOnlyForRoles` — live in field `config`. Each is a list drawn from the closed audience set:
 
 `super_admin`, `admin`, `editor`, `contributor`, `viewer`, `end_user`, `anonymous`, `api_key`
+
+`super_admin` is a legal but inert audience value — §3 step 1 exempts it.
 
 - `hideFrom` strips the field on serialization for any audience in the list.
 - `readOnlyFor` rejects the field at `content.Document.Set` for any audience in the list.
@@ -103,7 +107,7 @@ API-key access is defined solely by the key's scopes (§3 step 5) — not by int
 ```
 
 - `collections[].id` references a collection by `id`, never `slug` — the same rule every collection reference follows (EC-4).
-- `collections[].actions` is a subset of `read`, `create`, `update`, `delete`. There is no `publish` action in an API-key scope — publishing requires an admin principal (BR-LIFE-3).
+- `collections[].actions` is a subset of `read`, `create`, `update`, `delete`. There is no `publish` action in an API-key scope — publishing requires an admin-class principal of role `editor` or above (BR-LIFE-3).
 - `collections[].draftAccess`: `true` includes drafts in reads for that collection; `false` (default) limits reads to published, non-trashed records (BR-API-2). This implements "unless the key scope explicitly grants draft access."
 - `passwordReset`: a global capability, not per-collection. It gates the end-user password-reset request endpoint (BR-AUTH-13) and lives beside — not inside — the per-collection list because it carries no collection scope.
 - A revoked key resolves to `anonymous` for every subsequent request (§3 step 5); it does not error at the transport layer — the request proceeds as if unauthenticated, subject to §1's `anonymous` grants.

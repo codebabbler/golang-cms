@@ -48,7 +48,7 @@ Resolve every blocker and decision-heavy High finding from the architecture revi
 | `endUsers` | `"own"` \| `"all"` | End-user principals: `all` = unrestricted (within ScopePublic on reads), `own` = `ownerOnly`. Omitted = deny |
 | `anonymous` | bool | Valid on `read` only. `true` = anonymous read under ScopePublic |
 
-Role lattice: `viewer < contributor < editor < admin < super_admin`. Omitted action ⇒ deny for all governed classes (BR-RBAC-3). `publish` additionally floors at `editor` regardless of rules (BR-LIFE-3 unchanged).
+Role lattice: `viewer < contributor < editor < admin < super_admin`. Omitted action ⇒ deny for all governed classes (BR-RBAC-3). `publish` additionally floors at `editor` regardless of rules (BR-LIFE-3 unchanged). Unpublish evaluates as the `publish` action.
 
 ### 1.2 Worked examples (normative)
 
