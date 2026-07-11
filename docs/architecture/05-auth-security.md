@@ -1,6 +1,6 @@
 # 05 — Auth & Security
 
-**Version:** 1.1 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
+**Version:** 1.2 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
 
 Three principal types, three different threat models, three different mechanisms. This document incorporates the auth specification in full; the corresponding invariants live in `../BUSINESS_RULES.md` §4–§5 and tests trace to them.
 
@@ -14,15 +14,15 @@ Three principal types, three different threat models, three different mechanisms
 
 - **Login:** returns 200 with `Set-Cookie: cms_session=<256-bit-random>; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=604800`; the body includes `csrfToken` (BR-AUTH-1). Both the session ID and the CSRF token rotate on every successful login — a session or CSRF value established before authentication is discarded, defeating fixation.
 - The cookie value is the lookup key. The database stores only the hash: `(token_hash, user_id, created_at, last_seen_at, ip, user_agent)` in `cms_sessions` (BR-AUTH-2). Session theft via database read yields nothing replayable. Session tokens are random 256-bit values verified by hashed lookup; no signing is involved. `CMS_MASTER_SECRET` is the root secret for at-rest encryption of system key material (§3) and plays no role in sessions.
-- **Password hashing:** Argon2id with per-hash salts (BR-AUTH-3), parameters pinned at 64 MiB memory, 3 iterations, parallelism 2. These parameters apply to all principal kinds. Password policy is length-only — no composition rules: minimum 10 characters for admins, 8 characters for end users.
+- **Password hashing:** Argon2id with per-hash salts (BR-AUTH-3), parameters pinned at 64 MiB memory, 3 iterations, parallelism 2. These parameters apply to all principal kinds. Password policy is length-only — no composition rules: minimum 10 characters for admins, 8 characters for end users. A global semaphore caps concurrent hash/verify operations at `min(4, NumCPU)`; work exceeding the cap waits up to 2 seconds, then fails with `429 rate_limited` — password hashing memory is bounded at ~256 MiB regardless of request volume (BR-AUTH-3).
 - **CSRF:** every state-changing admin request carries `X-CSRF-Token`, validated against the session's `csrf_hash` (BR-AUTH-4). The SPA holds the token in memory only (`06-admin-ui.md`).
-- **Expiry:** 7 days idle, 30 days absolute. Destructive operations (schema drops, purges, key revocation) require re-authentication within the preceding 4 hours — `middleware.RequireRecentAuth` (BR-AUTH-5).
+- **Expiry:** 7 days idle, 30 days absolute. Destructive operations (schema drops, purges, key revocation) require re-authentication within the preceding 4 hours — `middleware.RequireRecentAuth` (BR-AUTH-5). The session cookie re-issues with a fresh `Max-Age` once 24 hours have passed since it was last set, never extending past the 30-day absolute bound (BR-AUTH-5).
 - **Rate limiting:** 10 attempts/15 min per email, 30 attempts/15 min per IP (BR-AUTH-6), evaluated before Argon2id work (`04-api-layer.md` middleware order).
-- **First-Admin Bootstrap (BR-AUTH-11):** when `cms_users` is empty at startup, `auth.Bootstrap` generates a 256-bit random setup token, logs it exactly once at `warn`, and holds it in memory only — nothing persists. The admin UI's `/setup` screen accepts it exactly once to create the first super admin; the route returns 404 whenever `cms_users` is non-empty, and the token dies on use, after 30 minutes, or on process exit.
+- **First-Admin Bootstrap (BR-AUTH-11):** when `cms_users` is empty at startup, `auth.Bootstrap` generates a 256-bit random setup token, logs it exactly once at `warn` (emitted regardless of `CMS_LOG_LEVEL`), and holds it in memory only — nothing persists. The admin UI's `/setup` screen accepts it exactly once to create the first super admin; the route returns 404 whenever `cms_users` is non-empty, and the token dies on use, after 30 minutes, or on process exit.
 
 ### Recovery Mode (BR-AUTH-12)
 
-When `CMS_RECOVERY_EMAIL` is set at startup **and** names an existing `cms_users` row, `auth.Recovery` generates a 256-bit single-use recovery token, logs it once at `warn`, and enables `/recover`. The route accepts the token exactly once to set a new password for that user and revokes all of that user's sessions. The token dies on use, after 30 minutes, or on process exit; `/recover` returns 404 whenever recovery mode is not active. An unset `CMS_RECOVERY_EMAIL` means the feature is entirely absent — no route, no token, no log line. This mirrors BR-AUTH-11's bootstrap pattern and shares its log-exception treatment (`08-observability.md`). A `CMS_RECOVERY_EMAIL` naming no existing user logs one `warn` line and enables nothing.
+When `CMS_RECOVERY_EMAIL` is set at startup **and** names an existing `cms_users` row, `auth.Recovery` generates a 256-bit single-use recovery token, logs it once at `warn` (emitted regardless of `CMS_LOG_LEVEL`), and enables `/recover`. The route accepts the token exactly once to set a new password for that user and revokes all of that user's sessions. The token dies on use, after 30 minutes, or on process exit; `/recover` returns 404 whenever recovery mode is not active. An unset `CMS_RECOVERY_EMAIL` means the feature is entirely absent — no route, no token, no log line. This mirrors BR-AUTH-11's bootstrap pattern and shares its log-exception treatment (`08-observability.md`). A `CMS_RECOVERY_EMAIL` naming no existing user logs one `warn` line and enables nothing.
 
 **Admin-issued resets:** a super admin can generate a one-time reset token for any admin from the users screen; an admin can do the same only for non-super-admin targets (P-2 limits). The token displays exactly once (BR-AUTH-7 style), is conveyed out-of-band by the operator, and is consumed at a reset screen. This reuses the `cms_reset_tokens` mechanics described under Password Reset (§3) — same table, same hashing, same single-use/expiry discipline. Consuming an admin-issued reset token revokes all of the target user's sessions, exactly as recovery mode does.
 
@@ -43,6 +43,7 @@ For when the CMS acts as the user store (`cms_end_users`) for a client applicati
 - **Key rotation:** generate a successor keypair with a new `kid`; issue with the new key while still verifying against both `kid`s; retire the old row after 15 minutes (the maximum JWT TTL). If `CMS_MASTER_SECRET` is lost, recovery is to regenerate the keypair: outstanding access JWTs (≤15 minutes old) fail verification, and clients silently re-issue via their refresh tokens — which are opaque hashed rows independent of the RSA key, so no re-login is required.
 - **Refresh:** refresh tokens store hashed in `cms_refresh_tokens`, grouped by `family_id`. Refreshing rotates both tokens.
 - **Reuse detection:** presenting an already-rotated refresh token is theft evidence — the handler revokes the entire `family_id` and returns 401 (`unauthorized`); the legitimate client re-authenticates. *(Resolves EC-8; BR-AUTH-9.)*
+- **Registration gate & disable (BR-AUTH-14):** registration is enabled only when `CMS_END_USER_REGISTRATION=enabled` (default `disabled`); otherwise `/api/v1/auth/register` returns 404. Admins manage end users at `/api/admin/end-users` (list, disable, re-enable, revoke refresh families). Disabling sets `disabled_at`, revokes every refresh-token family, and the evaluator resolves the principal as `anonymous`; `login`/`refresh` for a disabled user return the uniform `401`.
 
 ### Password Reset (BR-AUTH-13)
 
@@ -69,7 +70,7 @@ Rate limiting keys on client IP, and the binary deploys behind an edge proxy (`0
 
 This rule is deterministic and fails safe: an unlisted proxy degrades to per-proxy-IP limiting rather than unlimited requests; a listed proxy that blind-forwards `X-Forwarded-For` is guarded by the append requirement above, not by this fallback. *(Resolves EC-10.)*
 
-**Rate limiting extensions and enumeration posture:** `register` and `refresh` adopt BR-AUTH-6's existing numbers — 10 attempts/15 min per email (per end user, for `refresh`), 30 attempts/15 min per IP. `login` and `register` return uniform errors and always perform one Argon2id verification, even against an unknown email, so neither response shape nor timing discloses account existence. The per-email limiter carries a deliberate trade-off: an attacker who knows a victim's email can lock out that victim's own login attempts for the rate-limit window (targeted lockout); this is accepted because the alternative — no per-email limit — permits unbounded per-account credential brute force, which is the worse outcome.
+**Rate limiting extensions and enumeration posture:** `register` and `refresh` adopt BR-AUTH-6's existing numbers — 10 attempts/15 min per email (per end user, for `refresh`), 30 attempts/15 min per IP. `login` and `register` return uniform errors and always perform one Argon2id verification, even against an unknown email, so neither response shape nor timing discloses account existence. The per-email limiter carries a deliberate trade-off: an attacker who knows a victim's email can lock out that victim's own login attempts for the rate-limit window (targeted lockout); this is accepted because the alternative — no per-email limit — permits unbounded per-account credential brute force, which is the worse outcome. Anonymous public reads limit at 300 requests/min per client IP, and `?count=exact` is authenticated-only (BR-API-7). The Argon2id semaphore (§1, BR-AUTH-3) bounds the aggregate memory cost of the uniform-verification policy.
 
 ## 6. Threat Model Summary
 
@@ -86,6 +87,8 @@ This rule is deterministic and fails safe: an unlisted proxy degrades to per-pro
 - Targeted rate-limit lockout is an accepted trade-off of the per-email limiter (§5), traded against unbounded per-account brute force.
 - Malicious media hosting mitigated by the MIME allowlist enforced at presign (`04-api-layer.md`) and origin isolation between the media bucket and the admin UI origin (`09-deployment.md`).
 - DB-read key theft mitigated by at-rest encryption of `cms_system_keys.private_pem` under `CMS_MASTER_SECRET` (§3, BR-AUTH-10) — a database read alone no longer yields a usable signing key.
+- Cross-origin abuse of the admin surface is prevented by the absence of CORS headers on `/api/admin/*` plus cookie `SameSite=Lax` and CSRF (BR-API-6).
+- Password-hashing memory exhaustion is bounded by the Argon2id admission semaphore (BR-AUTH-3).
 
 ## Edge-Case Coverage (this document)
 
