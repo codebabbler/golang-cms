@@ -1,6 +1,6 @@
 # 01 — System Overview
 
-**Version:** 1.0 · **Last Updated:** 2026-07-07 · **Owner:** Miraj Aryal
+**Version:** 1.1 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
 
 ## What the System Is
 
@@ -45,7 +45,7 @@ golang-cms is a headless, config-driven CMS compiled into one Go binary that ser
 
 **Admin mutation.** The request passes RequestID → Logger → RateLimit → session lookup (hashed token, BR-AUTH-2) → CSRF validation (BR-AUTH-4) → recent-auth check when destructive (BR-AUTH-5) → `access.Evaluator.Decide` (BR-RBAC-2) → handler → `content.Document.Set` (BR-RBAC-5) → `lifecycle.Service.Save`, which writes the live row and its revision in one transaction (BR-LIFE-1) → `audit.Recorder.Emit` (BR-AUDIT-1).
 
-**Public / API-key read.** Auth resolves the principal (API key hash or JWT verification) → `access.Evaluator.Decide` → `query.Builder` composes the query with identifier quoting (BR-SCHEMA-3), the trash filter (BR-LIFE-4), the published-only scope (BR-API-2), and the role predicate (BR-RBAC-6) → pagination clamps apply (BR-API-1).
+**Public / API-key read and write.** Requests to `/api/v1/collections/*` resolve the principal via API key hash or JWT verification → `access.Evaluator.Decide` → for reads, `query.Builder` composes the query with identifier quoting (BR-SCHEMA-3), the trash filter (BR-LIFE-4), the published-only scope (BR-API-2), and the role predicate (BR-RBAC-6) → pagination clamps apply (BR-API-1); for creates, the client may supply an optional `Idempotency-Key` header for duplicate suppression over a 24-hour window.
 
 **Media upload.** The client requests a presigned PUT URL (size-capped, ≤15 min expiry), uploads directly to storage — bytes never transit the binary (BR-MEDIA-1) — then finalizes; only finalized records attach to `media` fields (BR-MEDIA-3).
 
@@ -55,7 +55,7 @@ Each collection is a real table `c_<slug>` carrying seven system columns (`id`, 
 
 ## Lifecycle Summary
 
-Startup: embedded migrations under advisory lock → schema cache load → missed-schedule catch-up → HTTP listener (BR-RUNTIME-3). Shutdown: drain in-flight requests within 15 seconds (BR-RUNTIME-6). Background work is two in-process tickers — `jobs.Retention` (trash purge, revision pruning, orphan sweep) and `jobs.Publisher` (V2 scheduled publishing) — never external queues (BR-RUNTIME-5).
+Startup: embedded migrations under advisory lock → instance lock → HTTP listener; the publisher's first tick runs the missed-schedule catch-up (BR-RUNTIME-3, BR-LIFE-9). *(Resolves EC-16.)* The instance lock prevents accidental second running instances. HTTP /healthz and /readyz endpoints reflect process health and schema readiness respectively. Shutdown: drain in-flight requests within 15 seconds (BR-RUNTIME-6). Background work is two in-process tickers — `jobs.Retention` (trash purge, revision pruning, orphan sweep) and `jobs.Publisher` (V2 scheduled publishing) — never external queues (BR-RUNTIME-5).
 
 ## Edge-Case Register
 
@@ -78,11 +78,12 @@ The register below enumerates the failure modes and boundary conditions the arch
 | EC-13 | Missed scheduled publishes | `08-observability.md`, `09-deployment.md` (BR-LIFE-9) |
 | EC-14 | Graceful-shutdown draining | `09-deployment.md` (BR-RUNTIME-6) |
 | EC-15 | SPA cache busting | `09-deployment.md` |
+| EC-16 | Accidental second running instance | `09-deployment.md` (BR-RUNTIME-8) |
 
 ## Consumer Classes
 
 | Principal | Mechanism | Surface |
 |---|---|---|
 | Admin user (P-1…P-5) | Session cookie + CSRF | Admin UI, `/api/admin/*` |
-| API Consumer (P-6) | `Authorization: Bearer cms_...` | `/api/collections/*` per key scope |
-| End User (P-7) | RS256 JWT + refresh rotation | Public content, V3 commerce/paywalls |
+| API Consumer (P-6) | `Authorization: Bearer cms_...` | `/api/v1/collections/*` per key scope |
+| End User (P-7) | RS256 JWT + refresh rotation | `/api/v1/collections/*` (published only) |
