@@ -52,7 +52,7 @@ Every schema change runs inside one transaction that first acquires `pg_advisory
 **Concurrent schema change vs. in-flight writes** *(Resolves EC-1)*: three mechanisms compose.
 
 1. The advisory lock serializes schema changes against each other — two admins cannot interleave DDL.
-2. Postgres's own `ACCESS EXCLUSIVE` lock on the altered table queues the DDL behind in-flight DML statements and queues new DML behind the DDL; no write ever sees a half-altered table. New reads also queue: every whitelisted ALTER TABLE takes ACCESS EXCLUSIVE — briefly for metadata-only changes, for the full rewrite duration on type changes — and ACCESS EXCLUSIVE conflicts with ACCESS SHARE.
+2. Postgres's own `ACCESS EXCLUSIVE` lock on the altered table queues the DDL behind in-flight DML statements and queues new DML behind the DDL; no write ever sees a half-altered table. New reads also queue behind most of these changes: the whitelisted ALTER TABLE forms take ACCESS EXCLUSIVE — briefly for metadata-only changes, for the full rewrite duration on type changes — and ACCESS EXCLUSIVE conflicts with ACCESS SHARE. AddForeignKey is the exception: ADD FOREIGN KEY takes SHARE ROW EXCLUSIVE, blocking writes but not reads.
 3. The in-memory schema cache swaps atomically before the advisory lock releases (BR-RUNTIME-7), so no request planned after the change uses stale metadata. A request planned *before* a destructive change may still reference a dropped column and receives the standard error envelope; with a single-tenant admin population, this window is accepted and audited rather than prevented.
 
 ## Destructive Changes (BR-SCHEMA-7)
