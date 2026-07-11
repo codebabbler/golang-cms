@@ -110,7 +110,9 @@ paths:
             maxLength: 128
           description: >-
             Optional idempotency key; a replay from the same principal within
-            24 hours returns the original creation result.
+            24 hours returns 200 with the record's current representation
+            (404 if since purged). The same key with a different body returns
+            422. The first create returns 201.
       requestBody:
         required: true
         content:
@@ -187,8 +189,8 @@ paths:
             schema:
               type: object
       responses:
-        '200':
-          description: Registration result.
+        '201':
+          description: Account created.
           content:
             application/json:
               schema:
