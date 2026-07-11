@@ -55,7 +55,7 @@ Each collection is a real table `c_<slug>` carrying seven system columns (`id`, 
 
 ## Lifecycle Summary
 
-Startup: embedded migrations under advisory lock → instance lock → HTTP listener; the publisher's first tick runs the missed-schedule catch-up (BR-RUNTIME-3, BR-LIFE-9). *(Resolves EC-16.)* The instance lock prevents accidental second running instances. HTTP /healthz and /readyz endpoints reflect process health and schema readiness respectively. Shutdown: drain in-flight requests within 15 seconds (BR-RUNTIME-6). Background work is two in-process tickers — `jobs.Retention` (trash purge, revision pruning, orphan sweep) and `jobs.Publisher` (V2 scheduled publishing) — never external queues (BR-RUNTIME-5).
+Startup: embedded migrations under advisory lock → instance lock (BR-RUNTIME-8) → schema cache load → HTTP listener; the publisher's first tick runs the missed-schedule catch-up (BR-RUNTIME-3, BR-LIFE-9). *(Resolves EC-16.)* The instance lock prevents accidental second running instances. HTTP /healthz and /readyz endpoints reflect process health and schema readiness respectively. Shutdown: drain in-flight requests within 15 seconds (BR-RUNTIME-6). Background work is two in-process tickers — `jobs.Retention` (trash purge, revision pruning, orphan sweep) and `jobs.Publisher` (V2 scheduled publishing) — never external queues (BR-RUNTIME-5).
 
 ## Edge-Case Register
 
