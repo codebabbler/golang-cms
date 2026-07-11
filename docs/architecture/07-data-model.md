@@ -1,6 +1,6 @@
 # 07 — Data Model
 
-**Version:** 1.2 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
+**Version:** 1.3 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
 
 This document specifies physical storage: naming, every system table, the anatomy of collection tables, the live-table/revisions contract, trash semantics, and retention bounds. The engine that mutates this model is specified in `03-dynamic-schema.md`.
 
@@ -50,9 +50,11 @@ Every `c_<slug>` table carries exactly these system columns (BR-SCHEMA-8) plus o
 | `created_by` | `UUID` | actor reference |
 | `deleted_at` | `TIMESTAMPTZ` | NULL = live; non-NULL = trashed (BR-LIFE-4) |
 
+`created_by` holds the acting principal's UUID from whichever store issued it (`cms_users`, `cms_end_users`, or `cms_api_keys`) with no discriminator column. Display resolution checks `cms_users` → `cms_end_users` → `cms_api_keys`; predicate matching (`ownerOnly`, owner-draft) is raw UUID equality — cross-store collision is negligible.
+
 User-field storage follows the field-type reference: `text→TEXT`, `richText→JSONB`, `number→NUMERIC(p,s)` when the field config declares precision/scale or bare `NUMERIC` otherwise, `boolean→BOOLEAN`, `datetime→TIMESTAMPTZ`, `media→UUID` FK to `cms_media` with `ON DELETE RESTRICT` plus the delivery URL resolved at read time, `relation→UUID` FK to the target's `id` with `ON DELETE RESTRICT`, `json→JSONB`. User columns are always nullable in DDL; `required` enforcement lives in `content.Document.Set` (`03-dynamic-schema.md`).
 
-**Indexes.** PK on `id`; a partial index on `(status) WHERE deleted_at IS NULL` serving the public published-only scope (BR-API-2); a composite `(field, id)` B-tree per `indexed` field, serving the mandatory `id` tiebreaker sort directly (`02-core-interfaces.md` query.Builder invariants 5 and 7); and for every `unique` field a **partial unique index** `WHERE deleted_at IS NULL`. Index names follow `ix_<table>_<field>` with the join-table truncation rule above when they would exceed the 63-byte limit; renames rename dependent indexes in the same transaction (`03-dynamic-schema.md`).
+**Indexes.** PK on `id`; a partial index on `(status) WHERE deleted_at IS NULL` serving the public published-only scope (BR-API-2); a composite `(field, id)` B-tree per `indexed` field, serving the mandatory `id` tiebreaker sort directly (`02-core-interfaces.md` query.Builder invariants 5 and 7); and for every `unique` field a **partial unique index** `WHERE deleted_at IS NULL`. Index names follow `ix_<table>_<field>` with the join-table truncation rule above when they would exceed the 63-byte limit; renames rename dependent indexes in the same transaction (`03-dynamic-schema.md`). Every collection table also carries a `(created_by, id)` B-tree: the `ownerOnly` predicate (BR-RBAC-6) and owner-draft visibility (BR-API-2) both filter on `created_by`, and the owner-draft OR-shape plans as a bitmap-OR of this index and the status partial index.
 
 **Trash-restore collision** *(Resolves EC-6)*: uniqueness binds only live rows, so trashing a record frees its unique values — a legitimate workflow (trash a record, create its replacement). Restoring checks the partial index the moment `deleted_at` clears: if a live row now holds the value, the restore fails with `409 Conflict` naming the colliding field and record, and the trashed row remains trashed. Restore never overwrites and never merges (BR-LIFE-5).
 
@@ -78,7 +80,7 @@ User-field storage follows the field-type reference: `text→TEXT`, `richText→
 5. Purges `cms_reset_tokens` rows that are used or expired (BR-AUTH-13).
 6. Purges `cms_refresh_tokens` rows that are rotated or revoked and older than 30 days.
 7. Purges `cms_idempotency_keys` rows older than 24 h (`04-api-layer.md` §Idempotent Creates).
-8. Retries `cms_media_deletions` entries older than 1 hour: delete the object, then the row (BR-MEDIA-5).
+8. Retries `cms_media_deletions` entries older than 1 hour: delete the object — a 404 counts as success — then the row (BR-MEDIA-5).
 
 ## Media Deletion
 
