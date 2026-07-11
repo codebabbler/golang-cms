@@ -1,6 +1,6 @@
 # 10 — Project Structure
 
-**Version:** 1.0 · **Last Updated:** 2026-07-08 · **Owner:** Miraj Aryal
+**Version:** 1.1 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
 
 One Go module, everything importable under `internal/`, one command. The layout mirrors the interface seams of `02-core-interfaces.md` — one package per contract — so the dependency rules there are enforceable by import review.
 
@@ -30,6 +30,7 @@ golang-cms/
 │   ├── src/
 │   └── dist/                  # build output, go:embed target (gitignored)
 ├── docs/                      # this documentation set
+│   └── api/                   # openapi.yaml — API contract reference
 ├── sqlc.yaml
 ├── Makefile                   # build (vite → go), test, trace, generate
 └── go.mod
@@ -45,6 +46,7 @@ golang-cms/
 | `sqlc` output imports only via `store`; collection tables never appear in `store/queries`. | System tables are static and type-safe; collection tables are dynamic and belong to `query.Builder` exclusively. |
 | DDL strings exist only in `schema` (engine templates) and `store/migrations`. | Two auditable DDL surfaces — one dynamic and whitelisted (BR-SCHEMA-4), one static and migrated. |
 | No imaging or media-processing libraries in `go.mod`. | BR-MEDIA-4 [structural]; CI dependency review enforces BR-RUNTIME-2. |
+| CI enforces this table with `depguard` (or equivalent). | Import review is necessary but not sufficient — the linter makes the seams mechanical. |
 
 ## Migrations
 
@@ -70,3 +72,4 @@ Forward-only, numbered `NNNN_description.sql`, embedded via `go:embed`, executed
 | `trace` | BR coverage check (N-10). |
 | `generate` | `sqlc generate`. |
 | `dev` | Vite dev server proxying `/api` to a locally running binary — the only place UI and API run unembedded. |
+| `bench` | Seeded 100k-row database asserting N-3/N-4; required before release gates. |
