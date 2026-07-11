@@ -5,7 +5,7 @@ description: Use when touching internal/auth or any credential/token handling �
 
 # Auth Security Conventions
 
-Distilled from `docs/architecture/05-auth-security.md`, `docs/BUSINESS_RULES.md` §4 (BR-AUTH-1…11), and `docs/architecture/07-data-model.md` (token tables). Those documents are authoritative.
+Distilled from `docs/architecture/05-auth-security.md`, `docs/BUSINESS_RULES.md` §4 (BR-AUTH-1…14), and `docs/architecture/07-data-model.md` (token tables). Those documents are authoritative.
 
 **Boundary:** this skill owns auth *internals* — issuance, verification, storage. Route wiring and the normative middleware order belong to `api-conventions` — do not restate them here.
 
@@ -18,7 +18,7 @@ Distilled from `docs/architecture/05-auth-security.md`, `docs/BUSINESS_RULES.md`
 | API keys | sha256 (BR-AUTH-7) | `cms_api_keys.token_hash` |
 | Refresh tokens | sha256 (BR-AUTH-9) | `cms_refresh_tokens.token_hash` |
 
-Raw token values never persist and never log, with two sanctioned exceptions: the single-use setup and recovery tokens (BR-AUTH-11/12), each logged once at `warn` with a 30-minute TTL (`docs/architecture/08-observability.md`). `CMS_MASTER_SECRET` encrypts system key material at rest (BR-AUTH-10); it plays no role in signing — session tokens are random 256-bit values verified by hashed lookup, never signed.
+Raw token values never persist and never log, with two sanctioned exceptions: the single-use setup and recovery tokens (BR-AUTH-11/12), each logged once at `warn` with a 30-minute TTL, emitted regardless of `CMS_LOG_LEVEL` (`docs/architecture/08-observability.md`). `CMS_MASTER_SECRET` encrypts system key material at rest (BR-AUTH-10); it plays no role in signing — session tokens are random 256-bit values verified by hashed lookup, never signed.
 
 ## Hard Rules
 
@@ -29,11 +29,11 @@ Raw token values never persist and never log, with two sanctioned exceptions: th
 5. **Key management** (BR-AUTH-10): the RSA-2048 keypair lives in `cms_system_keys`, auto-generated when `JWT_PRIVATE_KEY` is absent. RS256 stands until a concrete constraint justifies EdDSA.
 6. **Refresh rotation + family revocation** (BR-AUTH-9, EC-8): every refresh rotates both tokens; presenting an already-rotated token revokes the entire `family_id` and returns 401. The family check precedes issuance — order matters.
 7. **First-admin bootstrap** (BR-AUTH-11): when `cms_users` is empty at startup, `auth.Bootstrap` logs a 256-bit single-use setup token (once, at `warn`, memory-only); `/setup` consumes it to create the first super admin and returns 404 whenever `cms_users` is non-empty. The token dies on use or process exit. No bootstrap env vars exist — do not add any.
-8. **Client IP resolution** (EC-10): private/loopback direct peer → rightmost non-private `X-Forwarded-For` entry; public direct peer → socket address, header ignored. Deterministic, no trusted-proxy configuration.
+8. **Client IP resolution** (EC-10): trusted direct peer (loopback, RFC1918, or a `CMS_TRUSTED_PROXY_CIDRS` match) → rightmost untrusted `X-Forwarded-For` entry, falling back to the socket address when none exists; untrusted direct peer → socket address, header ignored. Deterministic and fail-safe — degradation is per-proxy-IP limiting, never unlimited (05 §5).
 
 ## Test Obligations
 
-Trace to BR-AUTH-1…11. Highest-value adversarial tests: replaying a rotated refresh token kills the family; a database scan asserting no raw token substrings; `/setup` returning 404 with a non-empty `cms_users` even with a valid token; spoofed `X-Forwarded-For` from a public peer not moving the rate-limit key.
+Trace to BR-AUTH-1…14. Highest-value adversarial tests: replaying a rotated refresh token kills the family; a database scan asserting no raw token substrings; `/setup` returning 404 with a non-empty `cms_users` even with a valid token; spoofed `X-Forwarded-For` from a public peer not moving the rate-limit key.
 
 ## Review Checklist
 
