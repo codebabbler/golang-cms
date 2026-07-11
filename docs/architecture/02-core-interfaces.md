@@ -1,6 +1,6 @@
 # 02 — Core Interfaces
 
-**Version:** 1.1 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
+**Version:** 1.2 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
 
 This document specifies the internal seams of the binary: the contracts each package exposes, the invariants each contract owns, and the dependency rules between them. Handlers depend on these interfaces only — never on implementations. Signatures appear at contract level; implementation belongs to the delivery cycle.
 
@@ -60,11 +60,11 @@ Invariants the builder owns — callers cannot disable any of them:
 
 1. Every identifier passes `QuoteIdent`; identifiers are never parameters, values are never interpolated (BR-SCHEMA-3).
 2. `deleted_at IS NULL` appends to every query except `ScopeTrash` (BR-LIFE-4).
-3. `ScopePublic` appends `status = 'published'` (BR-API-2).
+3. `ScopePublic` appends `status = 'published'` (BR-API-2), relaxed to `(status = 'published' OR created_by = <principal>)` when the Decision carries an authenticated public principal (owner-draft visibility); anonymous requests get the strict form.
 4. `WithDecision` appends the row predicate (BR-RBAC-6).
 5. `Paginate` clamps limit to 100, rejects offset > 10,000, and always appends the `id` tiebreaker sort (BR-API-1); `Page` carries either an `offset` or an opaque cursor of sort key + `id` — supplying both is a `422` error.
 6. `Where`/`Sort` reject fields absent from the schema snapshot or hidden by `Decision.FieldRules`.
-7. `ScopePublic` accepts filter/sort only on indexed or unique fields (BR-API-4); cursor pagination preserves the `id` tiebreaker and limit clamps.
+7. `ScopePublic` accepts filter/sort only on indexed or unique fields, and its operator set excludes `contains` (BR-API-4); cursor pagination preserves the `id` tiebreaker and limit clamps.
 
 ## content.Document
 
@@ -94,9 +94,10 @@ Guarantees: `Save` writes live row + revision in one transaction (BR-LIFE-1); `P
 ```text
 Presign(p Principal, req UploadRequest) (PresignedUpload, error)  // ≤15 min, size-capped
 Finalize(p Principal, mediaID UUID) (Media, error)                 // verifies object existence
+Delete(p Principal, mediaID UUID) error                            // destructive-gated; 409 while referenced (BR-MEDIA-5)
 ```
 
-Guarantees: no method accepts file bytes (BR-MEDIA-1); `Finalize` flips `pending → finalized` only after a storage HEAD confirms the object within the declared size (BR-MEDIA-2).
+Guarantees: no method accepts file bytes (BR-MEDIA-1); `Finalize` flips `pending → finalized` only after a storage HEAD confirms the object within the declared size (BR-MEDIA-2); `Delete` removes the row and enqueues the object key in one transaction, with object deletion after commit (BR-MEDIA-5).
 
 ## auth Services
 
