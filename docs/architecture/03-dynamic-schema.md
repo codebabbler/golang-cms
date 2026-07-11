@@ -1,6 +1,6 @@
 # 03 — Dynamic Schema Engine
 
-**Version:** 1.1 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
+**Version:** 1.2 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
 
 `schema.Engine` is the only component that issues DDL. It converts validated schema-change requests into whitelisted DDL operations plus metadata updates (`cms_collections`, `cms_fields`), committed atomically. This document specifies the definition model, every whitelisted operation, the safe-conversion matrix, concurrency behavior, destructive-change gates, and drift handling. Physical table layouts live in `07-data-model.md`.
 
@@ -13,6 +13,7 @@ Validation at the admin API boundary (`httpapi/admin.validateSlug`, re-checked b
 - Slugs match `^[a-z][a-z0-9_]{0,54}$`.
 - The blocklist rejects Postgres reserved words, the seven system column names (BR-SCHEMA-8), and the prefixes `cms_`, `c_`, `cj_`.
 - A collection holds at most 200 user fields — headroom under Postgres's 1600-column ceiling and a sanity bound on admin UI rendering.
+- An instance holds at most 500 collections; the 501st CreateCollection returns `422` — the same sanity-bound style as the 200-field cap.
 - `required` enforcement is application-level (`content.Document.Set`): user columns are always nullable in DDL, so ADD COLUMN never fails against existing rows. `unique` enforcement is database-level via partial unique indexes (see `07-data-model.md`).
 
 ## Whitelisted Operations (BR-SCHEMA-4)
@@ -33,6 +34,8 @@ The engine executes exactly these operations; `schema.Engine.Apply` rejects anyt
 
 `media` fields do not use AddForeignKey: AddField on a `media` field emits its constraint inline — `ADD COLUMN "<slug>" UUID REFERENCES cms_media(id) ON DELETE RESTRICT` — so every media column carries the FK that `07-data-model.md`'s media-deletion 409 depends on. AddForeignKey/DropForeignKey apply to `relation` fields only.
 
+Index names follow `ix_<table>_<field>`; when a name would exceed Postgres's 63-byte identifier limit, the join-table rule of `07-data-model.md` applies (each component truncates to its first 20 characters plus an 8-character hash of the full pair). RenameCollection and RenameField rename dependent indexes in the same transaction, keeping names deterministic — AddIndex's duplicate detection ("duplicate index → no-op") depends on this.
+
 ## Safe-Conversion Matrix (BR-SCHEMA-5)
 
 The engine permits exactly two conversion classes; it rejects everything else with a remediation message naming the drop-and-recreate path. *(Resolves EC-3.)*
@@ -40,6 +43,8 @@ The engine permits exactly two conversion classes; it rejects everything else wi
 | From → To | Allowed | Cast |
 |---|---|---|
 | `number(p,s)` → `number(p′,s′)` where p′≥p and s′≥s | Yes | implicit |
+| `number(p,s)` → `number` (bare) | Yes | widening to maximal |
+| `number` (bare) → `number(p,s)` | No | narrowing |
 | `text`, `number`, `boolean`, `datetime`, `json`, `richText` → `text` | Yes | `USING <col>::text` |
 | `relation` → anything | No | FK semantics cannot cast |
 | `media` → anything | No | object reference cannot cast |
@@ -56,6 +61,8 @@ Every schema change runs inside one transaction that first acquires `pg_advisory
 1. The advisory lock serializes schema changes against each other — two admins cannot interleave DDL.
 2. Postgres's own `ACCESS EXCLUSIVE` lock on the altered table queues the DDL behind in-flight DML statements and queues new DML behind the DDL; no write ever sees a half-altered table. New reads also queue behind most of these changes: the whitelisted ALTER TABLE forms take ACCESS EXCLUSIVE — briefly for metadata-only changes, for the full rewrite duration on type changes — and ACCESS EXCLUSIVE conflicts with ACCESS SHARE. AddForeignKey is the exception: ADD FOREIGN KEY takes SHARE ROW EXCLUSIVE, blocking writes but not reads.
 3. The in-memory schema cache swaps atomically before the advisory lock releases (BR-RUNTIME-7), so no request planned after the change uses stale metadata. A request planned *before* a destructive change may still reference a dropped column and receives the standard error envelope; with a single-tenant admin population, this window is accepted and audited rather than prevented.
+
+The schema transaction runs `SET LOCAL lock_timeout = '5s'`: DDL that cannot acquire its table lock within 5 seconds aborts with `409 conflict` and a retry message instead of queueing all new traffic behind it. The shared 10-connection pool (`09-deployment.md`) bounds how many requests can stack behind a stalled table, at the cost of coupling collections through the pool — schedule heavy changes off-peak.
 
 ## Destructive Changes (BR-SCHEMA-7)
 
@@ -85,6 +92,8 @@ Restore maps a historical JSONB snapshot onto the *current* schema; it never fai
 Each collection's `search_config` names the searchable fields and weights. V2 materializes search as a generated `tsvector` column plus GIN index on the collection table. Any schema change that affects search — editing `search_config`, dropping or type-changing a searchable field — regenerates the column and index inside the same advisory-locked transaction as the triggering change. The rebuild holds ACCESS EXCLUSIVE: reads and writes to that collection stall for its duration (~seconds at the 100k-row design point; the audit event records the duration — schedule heavy changes off-peak). Search results are never stale relative to committed schema and never reference dropped fields. *(Resolves EC-12.)*
 
 **V2 Alternative: `CREATE INDEX CONCURRENTLY` with Reconciliation.** To avoid stalls during large-table rebuilds, an alternative strategy maintains the `tsvector` column through database triggers (one INSERT/UPDATE trigger per collection, dynamically created at schema load). Index creation uses `CREATE INDEX CONCURRENTLY` outside the schema transaction, with a subsequent reconciliation step to detect and repair any rows inserted during the index build. This trades synchronous lockout for bounded staleness (stale reads during the ~seconds-long index build) and an async reconciliation pass. This alternative is adopted only if rebuild stalls become material at real collection sizes — a documented escape hatch, not a configuration option; both strategies guarantee search results never reference dropped fields.
+
+V2 may also restore public `contains` filtering (removed from `ScopePublic` in V1 — BR-API-4) behind a per-field `pg_trgm` GIN index; `pg_trgm` is a bundled extension, so N-9's restorability guarantee holds.
 
 ## Edge-Case Coverage (this document)
 
