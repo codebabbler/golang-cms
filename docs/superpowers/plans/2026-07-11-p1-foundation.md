@@ -2716,6 +2716,11 @@ for id in $(grep -oE 'BR-[A-Z]+-[0-9]+' "$manual" | sort -u); do
   if grep -F "**${id}.**" "$manual" | grep -q '\[structural\]'; then
     continue
   fi
+  # V2/V3-tagged rules bind from that version onward (BUSINESS_RULES.md
+  # preamble) — exempt until their version's delivery cycle.
+  if grep -qE "\*\*${id} \(V[23]\)\.\*\*" "$manual"; then
+    continue
+  fi
   if grep -qE "^${id}[[:space:]]" "$waivers"; then
     if tested "$id"; then
       echo "TRACE STALE: ${id} is waived but has a test — remove it from ${waivers}"
@@ -2742,7 +2747,7 @@ chmod +x scripts/trace.sh
 
 - [ ] **Step 2: Write `docs/trace-waivers.txt`**
 
-Every non-structural BR not covered by a P1 test, annotated with its owning phase per the phasing spec. P1 covers BR-RUNTIME-3/6/8, BR-API-3, BR-AUDIT-1/2, BR-MEDIA-6, BR-RBAC-1; structural (exempt, not listed): BR-RUNTIME-1/2, BR-MEDIA-1/4.
+Every non-structural, V1-binding BR not covered by a P1 test, annotated with its owning phase per the phasing spec. P1 covers BR-RUNTIME-3/6/8, BR-API-3, BR-AUDIT-1/2, BR-MEDIA-6, BR-RBAC-1; structural (exempt, not listed): BR-RUNTIME-1/2, BR-MEDIA-1/4; V2-tagged (tool-exempt, not listed): BR-AUDIT-3, BR-LIFE-9.
 
 ```text
 # BR-IDs pending a later phase (D-P1-2, phasing spec 2026-07-11).
@@ -2796,8 +2801,6 @@ BR-MEDIA-5 P7
 BR-LIFE-8 P8
 BR-MEDIA-2 P8
 BR-RUNTIME-5 P8
-BR-AUDIT-3 V2
-BR-LIFE-9 V2
 ```
 
 - [ ] **Step 3: Write `.golangci.yml`** — the 10-project-structure §Package Rules seams, configured now so they bind from each package's first commit
@@ -2847,7 +2850,7 @@ lint:
 - [ ] **Step 5: Run the gate**
 
 Run: `make trace`
-Expected: `trace OK (50 BR(s) waived pending later phases; must reach 0 by the V1 gate)` — exit 0. If any TRACE FAIL/STALE line prints, fix the waiver file or the test naming before proceeding.
+Expected: `trace OK (48 BR(s) waived pending later phases; must reach 0 by the V1 gate)` — exit 0. If any TRACE FAIL/STALE line prints, fix the waiver file or the test naming before proceeding.
 
 Run: `make lint`
 Expected: clean.
