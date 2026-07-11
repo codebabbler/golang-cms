@@ -1,6 +1,6 @@
 # 04 — API Layer
 
-**Version:** 1.1 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
+**Version:** 1.2 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
 
 This document specifies the HTTP surface: routes, the normative middleware order, the response envelope, pagination, filtering, relation expansion, and the upload flow. Every handler composes the interfaces of `02-core-interfaces.md`; no handler builds SQL or bypasses `Document.Set`.
 
@@ -12,8 +12,9 @@ This document specifies the HTTP surface: routes, the normative middleware order
 | `/api/admin/users`, `/api/admin/api-keys` | session | Admin user and key management (P-1/P-2 per persona limits). |
 | `/api/admin/collections` | session | Schema management — the `schema.Engine` operations of `03-dynamic-schema.md`. |
 | `/api/admin/collections/{slug}/records` | session | Full CRUD, trash view, restore, purge, revisions, publish/unpublish. |
-| `/api/admin/media` | session | `presign`, `finalize`, listing. |
-| `/api/v1/auth/*` | none → JWT | End-user `register`, `login`, `refresh`, `logout`, `password-reset/request`, `password-reset/confirm` (F-11, BR-AUTH-13). |
+| `/api/admin/media` | session | `presign`, `finalize`, listing, delete (BR-MEDIA-5). |
+| `/api/admin/end-users` | session | End-user management: list, disable/enable, revoke refresh families (BR-AUTH-14). |
+| `/api/v1/auth/*` | none → JWT | End-user `register` (env-gated, BR-AUTH-14), `login`, `refresh`, `logout`, `password-reset/request`, `password-reset/confirm` (F-11, BR-AUTH-13). |
 | `/api/v1/collections/{slug}/records` | API key or JWT or anonymous | Published-scope reads; writes per API-key scope or end-user access rules. |
 | `/recover` | none | Active only while recovery mode is enabled (BR-AUTH-12); 404 otherwise. Consumes the single-use super-admin recovery token, resets the target user's password, and revokes their sessions. |
 | `/healthz` | none | Liveness (`09-deployment.md`). |
@@ -33,7 +34,7 @@ RequestID → Logger → Recover → RateLimit → Auth
 → handler
 ```
 
-The order is a business-rule surface: rate limiting precedes authentication so credential stuffing burns the limiter, not Argon2id time (BR-AUTH-6); CSRF checks run only after a valid session exists (BR-AUTH-4); recent-auth gates bind to the destructive route set (BR-AUTH-5, BR-SCHEMA-7). Changing this order requires a BUSINESS_RULES review.
+The order is a business-rule surface: rate limiting precedes authentication so credential stuffing burns the limiter, not Argon2id time (BR-AUTH-6); anonymous public reads limit at 300 requests/min per client IP (BR-API-7); CSRF checks run only after a valid session exists (BR-AUTH-4); recent-auth gates bind to the destructive route set (BR-AUTH-5, BR-SCHEMA-7). Changing this order requires a BUSINESS_RULES review.
 
 ## Response Envelope
 
@@ -43,7 +44,7 @@ Success (pagination `total` shown because the request carried `?count=exact`):
 { "data": ..., "meta": { "pagination": { "limit": 25, "offset": 0, "total": 1042 } } }
 ```
 
-`meta.pagination.total` appears only when the request includes `?count=exact`; public consumers default to no count (an unqualified `COUNT` is an expensive scan), and the admin UI requests it where its tables need totals.
+`meta.pagination.total` appears only when the request includes `?count=exact`; public consumers default to no count (an unqualified `COUNT` is an expensive scan), and the admin UI requests it where its tables need totals. `?count=exact` requires an authenticated principal — anonymous use returns `422 validation_failed` naming the parameter (BR-API-7).
 
 Error — one shape everywhere, written only by `httpapi.WriteError` (BR-API-3):
 
@@ -74,21 +75,27 @@ Request-body caps producing `payload_too_large`: **5 MiB** on record-write route
 
 ## Filtering and Sorting (BR-API-4)
 
-`?filter[<field>][<op>]=<value>` with `op ∈ eq, neq, lt, lte, gt, gte, in, contains`; `?sort=<field>` / `?sort=-<field>`. Fields must exist in the schema snapshot and survive `Decision.FieldRules` visibility; violations return `422` naming the field. `ScopePublic` queries additionally accept `filter`/`sort` only on fields marked `indexed` or `unique`; a request naming any other field returns `422 validation_failed` naming the offending field. `ScopeAdmin` and `ScopeTrash` accept any schema field, still subject to `Decision.FieldRules` visibility and the query's `statement_timeout`. All composition happens inside `query.Builder` — operators are a closed set, and `contains` maps to `ILIKE` with escaped wildcards on `text` fields only.
+`?filter[<field>][<op>]=<value>` with `op ∈ eq, neq, lt, lte, gt, gte, in, contains`; `in` takes comma-separated values (`filter[status][in]=a,b`); `?sort=<field>` / `?sort=-<field>`. Fields must exist in the schema snapshot and survive `Decision.FieldRules` visibility; violations return `422` naming the field. `ScopePublic` queries accept `filter`/`sort` only on fields marked `indexed` or `unique`, with the operator subset `eq, neq, lt, lte, gt, gte, in` — `contains` is admin- and trash-scope only in V1 (BR-API-4): infix `ILIKE` cannot use B-tree indexes, and V2 may restore public `contains` behind a per-field `pg_trgm` GIN index. A public request naming any other field or operator returns `422 validation_failed` naming the offender. `ScopeAdmin` and `ScopeTrash` accept any schema field and the full operator set, still subject to `Decision.FieldRules` visibility and the query's `statement_timeout`. All composition happens inside `query.Builder` — operators are a closed set, and `contains` maps to `ILIKE` with escaped wildcards on `text` fields only; `contains` on any non-`text` field returns `422` naming the field.
 
 ## Caching (BR-API-5)
 
-Anonymous `ScopePublic` GETs carry `Cache-Control: public, s-maxage=60, stale-while-revalidate=60` and a strong `ETag`. Any request bearing `Authorization` or a cookie receives `Cache-Control: no-store` — without exception; a cacheable credentialed response is a security bug, not a performance optimization. Both cases add `Vary: Authorization, Cookie` so shared caches never conflate anonymous and credentialed results. V1 has no purge-on-publish signal, so a published change may take up to 60 seconds to reach an edge cache — an accepted propagation window, documented here rather than engineered away. V2 adds purge-on-publish webhooks, at which point cache TTLs can lengthen.
+Anonymous `ScopePublic` GETs carry `Cache-Control: public, s-maxage=60, stale-while-revalidate=60` and a strong `ETag`. Any request bearing `Authorization` or a cookie receives `Cache-Control: no-store` — without exception; a cacheable credentialed response is a security bug, not a performance optimization. Both cases add `Vary: Authorization, Cookie` so shared caches never conflate anonymous and credentialed results. V1 has no purge-on-publish signal, so a published change may take up to 60 seconds to reach an edge cache — an accepted propagation window, documented here rather than engineered away. V2 adds purge-on-publish webhooks, at which point cache TTLs can lengthen. Owner-draft-widened responses (BR-API-2) are always credentialed and therefore already `no-store`; the anonymous cacheable class is unaffected.
+
+## CORS (BR-API-6)
+
+Every `/api/v1` response carries `Access-Control-Allow-Origin: *`. Preflight `OPTIONS` requests are handled before authentication and rate limiting and answered with `Access-Control-Allow-Headers: Authorization, Content-Type, Idempotency-Key`, `Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS`, and `Access-Control-Max-Age: 86400`; non-preflight responses expose `X-Request-ID` and `ETag` via `Access-Control-Expose-Headers`. `/api/admin/*` and the SPA emit no CORS headers — the admin surface is same-origin only (cookie + CSRF, BR-AUTH-4). The wildcard is safe because bearer tokens are not ambient credentials: CORS never causes a browser to attach a victim's JWT, and cookies are never accepted on `/api/v1`. Because `Access-Control-Allow-Origin` is the constant `*`, the cached anonymous responses of BR-API-5 need no `Vary: Origin`.
 
 ## Idempotent Creates
 
 Public and API-key `POST` create endpoints under `/api/v1/collections/{slug}/records` accept an optional `Idempotency-Key` request header (≤128 bytes).
 
-Supplying the same `Idempotency-Key` from the same principal again within a 24-hour window returns the original creation result instead of creating a duplicate record. Keys are tracked in `cms_idempotency_keys` (`key_hash`, `principal_id`, `record_id`, `created_at`; unique on `(key_hash, principal_id)`; see `07-data-model.md`) and purged by `jobs.Retention` 24 hours after creation.
+Supplying the same `Idempotency-Key` from the same principal again within a 24-hour window returns the original creation result instead of creating a duplicate record. Keys are tracked in `cms_idempotency_keys` (`key_hash`, `principal_id`, `record_id`, `request_hash`, `created_at`; unique on `(key_hash, principal_id)`; see `07-data-model.md`) and purged by `jobs.Retention` 24 hours after creation.
+
+The idempotency row inserts in the same transaction as the record — a crash cannot separate them. A concurrent request with the same key blocks on the unique index until the first transaction resolves: if it committed, the second request returns the original outcome; if it aborted, the second proceeds as a fresh create. The row stores a `request_hash` of the request body: presenting the same key with a different body returns `422 validation_failed`. The first create returns `201`; a replay returns the record's **current** representation with `200` — or `404` if the record has since been purged.
 
 ## Relation Expansion
 
-`?expand=<relationField>` resolves one level deep (no nesting in V1). Expanded targets load through `ScopePublic` on public routes: a target that is trashed, draft, or hidden by access rules serializes as `null` rather than leaking or erroring — the read-side half of publish-referencing-trashed semantics (BR-LIFE-6). Unexpanded relation fields serialize as the bare UUID. Expansion resolves each relation field with a single batched IN query per field, never per-row lookups. *(Resolves EC-7.)*
+`?expand=<relationField>` resolves one level deep (no nesting in V1). Expanded targets load through `ScopePublic` on public routes: a target that is trashed, draft, or hidden by access rules serializes as `null` rather than leaking or erroring — the read-side half of publish-referencing-trashed semantics (BR-LIFE-6). Unexpanded relation fields serialize as the bare UUID. Expansion resolves each relation field with a single batched IN query per field, never per-row lookups. Expansion targets resolve strictly published-only even for their owners — owner-draft visibility (BR-API-2) applies to the requested records, never to expanded targets. *(Resolves EC-7.)*
 
 ## Upload Flow (BR-MEDIA-1/2/3)
 
