@@ -1,6 +1,6 @@
 # golang-cms — Requirements
 
-**Version:** 1.1 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
+**Version:** 1.2 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
 
 This document defines what golang-cms delivers, for whom, and how delivery is verified. Functional requirements carry version tags; the system ships in three releases (V1 MVP, V2 Polish & Search, V3 Commerce & Video). Invariant-level rules live in `BUSINESS_RULES.md`; this document references them rather than restating them.
 
@@ -34,14 +34,15 @@ golang-cms is a headless, config-driven CMS delivered as a single Go binary serv
 - **F-8 (V1).** Concurrent updates resolve by optimistic locking: a stale `version` yields `409 Conflict` and no write.
 - **F-9 (V1).** Admins authenticate with email + Argon2id-hashed password, receive an HttpOnly session cookie plus CSRF token, and re-authenticate within 4 hours for destructive operations.
 - **F-10 (V1).** Super Admins issue, scope, and revoke API keys; keys display once and authenticate server-to-server reads and writes per scope.
-- **F-11 (V1).** The CMS acts as the user store for client applications: end users register and log in, receive a 15-minute RS256 JWT plus rotating refresh token, and lose the whole token family on refresh-token reuse. *(Resolves EC-8 via BR-AUTH-9.)*
-- **F-12 (V1).** Per-collection access rules (read/create/update/delete/publish) with row predicates (e.g., `ownerOnly`) and field-level visibility (`hideFrom`, `readOnlyFor` audience lists) gate every request; missing rules deny for the governed classes.
+- **F-11 (V1).** The CMS acts as the user store for client applications: end users register and log in, receive a 15-minute RS256 JWT plus rotating refresh token, and lose the whole token family on refresh-token reuse; registration is env-gated and default-disabled (BR-AUTH-14). *(Resolves EC-8 via BR-AUTH-9.)*
+- **F-12 (V1).** Per-collection access rules (read/create/update/delete/publish) with row predicates (e.g., `ownerOnly`) and field-level visibility (`hideFrom`, `readOnlyFor` audience lists) gate every request; missing rules deny for the governed classes. Collections may set `createStatus` to publish public-API creates immediately (`docs/architecture/12-access-rules.md` §1).
 - **F-13 (V1).** Media uploads flow directly to object storage via presigned PUT URLs with size caps; the binary finalizes media records and serves delivery URLs.
 - **F-14 (V1).** The embedded admin UI covers schema building, content editing with Tiptap rich text (stored as JSONB), revision management, trash, user/key management, and access-rule editing.
 - **F-15 (V1).** List endpoints paginate with capped limit/offset and a stable sort; excessive offsets reject. *(Resolves EC-11 via BR-API-1.)* Admin lists additionally support keyset cursor pagination from V1.
 - **F-16 (V1).** Every mutation emits an audit event through the audit interface; the V1 sink is structured logging. V1 audit durability equals shipped stdout logs; queryable persistence arrives in V2 (accepted limitation).
 - **F-17 (V1).** The binary runs embedded system-table migrations automatically at startup under an advisory lock.
 - **F-32 (V1).** Account recovery and password reset: env-gated super-admin recovery mode (BR-AUTH-12); admin-issued one-time reset tokens; end-user reset via API-key-gated request plus public confirm, revoking all refresh-token families on success (BR-AUTH-13). The binary never sends email.
+- **F-34 (V1).** Admins list, disable, re-enable end users and revoke their refresh-token families; end-user registration is env-gated and default-disabled (BR-AUTH-14).
 
 ### Version 2 — Polish & Search
 
@@ -105,6 +106,7 @@ golang-cms is a headless, config-driven CMS delivered as a single Go binary serv
 - **UAC-1.4.** Deleting a published record removes it from every list, read, search, and relation resolution; restoring returns it intact; a concurrent update presenting a stale `version` receives `409 Conflict` and changes nothing.
 - **UAC-1.5.** A client requests a presigned URL, uploads a file directly to storage, finalizes the media record, and attaches it to a `media` field; separately, an End User logs in, refreshes tokens once, then replays the old refresh token and receives `401` with the whole token family revoked.
 - **UAC-1.6.** An API consumer whose key carries `passwordReset` requests a reset for an end user and receives a token; confirmation sets the new password and revokes every refresh-token family; separately, a recovery-mode start (`CMS_RECOVERY_EMAIL`) logs a single-use token that resets a locked-out super admin and dies on use.
+- **UAC-1.7.** An admin disables an end user: the user's refresh replay returns 401 and subsequent API requests resolve as anonymous; re-enabling restores access. Separately, in a collection whose `create` grant sets `createStatus: "published"`, an end-user create is immediately publicly readable, while in a default collection the same user reads back their own draft that anonymous requests cannot see.
 
 ### Version 2
 
