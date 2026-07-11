@@ -245,4 +245,19 @@ Confidence: high. The documentation set is internally consistent under three rou
 
 ---
 
-*End of Round-3 review. Findings AR3-1…AR3-6; disposition tracking should follow the established Resolution Status convention when addressed.*
+*End of Round-3 review. Findings AR3-1…AR3-6; dispositions below.*
+
+## Resolution Status (2026-07-11)
+
+Dispositioned against `docs/superpowers/specs/2026-07-11-round3-gap-resolution-design.md` (owner-approved, D3-1…D3-4); all edits committed. Stakeholder questions Q1–Q4 (Section 19) are resolved by D3-2 (media-less boot, BR-MEDIA-6), D3-3 (N-14 SLI + 08 §Alerting), and D3-4 (dedicated database and restart-on-exit supervisor as hard requirements).
+
+| AR3 # | Sev | Finding | Disposition |
+|---|---|---|---|
+| AR3-1 | Medium | No `created_by` index despite ownerOnly + owner-draft predicates. | Resolved: `(created_by, id)` B-tree added to the default index set (07 §Indexes). |
+| AR3-2 | Low | Preflight rate-limit exemption stated without rationale. | Resolved: rationale clause in BR-API-6 and 04 §CORS. |
+| AR3-3 | Low | Outbox retry vs already-deleted object unspecified. | Resolved: 404-counts-as-success in BR-MEDIA-5 and 07 duty 8. |
+| AR3-4 | Low | Idempotency duplicates hold a pool connection to the deadline. | Resolved: 5 s wait-then-409 in 04; bound pinned in 09's constants. |
+| AR3-5 | Low | `created_by` cross-store resolution order undocumented. | Resolved: lookup-order paragraph in 07 §Collection Table Anatomy. |
+| AR3-6 | Low | Storage-call timeouts unpinned; compression unstated. | Resolved: 10 s S3 per-call row + identity-encoding sentence in 09. |
+
+All round-3 findings are resolved in the committed documentation set as of 2026-07-11.
