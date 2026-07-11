@@ -1,6 +1,6 @@
 # 09 — Deployment
 
-**Version:** 1.1 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
+**Version:** 1.2 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
 
 The deliverable is one statically linked binary embedding the admin UI and the system-table migrations (N-1), targeting linux/amd64 and linux/arm64 (N-2). Deployment is the binary, the environment variables, PostgreSQL 16+, and an S3-compatible bucket — nothing else exists to operate (BR-RUNTIME-2).
 
@@ -10,19 +10,21 @@ The deliverable is one statically linked binary embedding the admin UI and the s
 
 ## Configuration
 
-All configuration enters through the environment variables of `../BUSINESS_RULES.md` § Naming Constants — the sixteen-variable table is exhaustive. The binary validates required variables at startup and exits non-zero listing every missing one at once, not the first.
+All configuration enters through the environment variables of `../BUSINESS_RULES.md` § Naming Constants — the seventeen-variable table is exhaustive. The binary validates required variables at startup and exits non-zero listing every missing one at once, not the first.
 
 ## Startup (BR-RUNTIME-3)
 
 1. Validate configuration; open the database pool.
 2. Run embedded migrations under a Postgres advisory lock — a concurrently restarting replacement process waits rather than racing.
-3. Acquire the process-lifetime instance lock (BR-RUNTIME-8): a session-scoped `pg_advisory_lock` on a dedicated key, distinct from the migration and schema keys. A second process fails startup immediately with a clear log line — the migration lock is something a replacement process waits on, but the instance lock is not: stop-then-start remains the only supported upgrade path. *(Resolves EC-16.)*
+3. Acquire the process-lifetime instance lock (BR-RUNTIME-8): a session-scoped `pg_advisory_lock` on a dedicated key, held on a dedicated connection with TCP keepalives, distinct from the migration and schema keys. Acquisition retries with backoff for up to 120 seconds — riding out a crashed predecessor's lingering session — then fails startup with a clear log line. If the lock connection drops after acquisition, the process exits non-zero: serving without the lock is never permitted. Stop-then-start remains the only supported upgrade path. *(Resolves EC-16.)*
 4. Load the schema cache.
 5. When `cms_users` is empty, generate and log the single-use setup token and enable `/setup` (BR-AUTH-11); when `CMS_RECOVERY_EMAIL` names an existing user, generate and log the single-use recovery token and enable `/recover` (BR-AUTH-12). Both tokens are logged once at `warn`, carry a 30-minute TTL, and die on use or process exit.
 6. Open the HTTP listener on `CMS_PORT`; `/readyz` begins returning 200.
-7. The publisher's first tick, immediately after the listener opens, runs the scheduled-publish catch-up scan: publish every record whose `publish_at` elapsed while the binary was down, logging each late publication (BR-LIFE-9; `08-observability.md`). *(Resolves EC-13, deployment half.)*
+7. (V2) The publisher's first tick, immediately after the listener opens, runs the scheduled-publish catch-up scan: publish every record whose `publish_at` elapsed while the binary was down, logging each late publication (BR-LIFE-9; `08-observability.md`). *(Resolves EC-13, deployment half.)*
 
 Migration failure, instance-lock failure (BR-RUNTIME-8), key-load failure (BR-AUTH-10), or schema-cache failure aborts startup with a non-zero exit — the system fails closed (N-11) rather than serving with partial state.
+
+The three advisory-lock keys are fixed constants: migration `0x636D7300`, schema `0x636D7301`, instance `0x636D7302`. golang-cms assumes it is the only user of its database's advisory-lock keyspace — deploy it into a dedicated database.
 
 ## Shutdown (EC-14)
 
@@ -32,7 +34,7 @@ On SIGTERM/SIGINT the binary: (1) flips `/readyz` and `/healthz` to 503 so the p
 
 ## Timeouts
 
-`http.Server` and query-level timeouts are compiled-in constants, not environment variables — they do not appear in the sixteen-variable table above.
+`http.Server` and query-level timeouts are compiled-in constants, not environment variables — they do not appear in the seventeen-variable table above.
 
 | Setting | Value |
 |---|---|
@@ -43,6 +45,8 @@ On SIGTERM/SIGINT the binary: (1) flips `/readyz` and `/healthz` to 503 so the p
 | Per-request context deadline | 25 s |
 | Postgres `statement_timeout` — collection queries | 10 s |
 | Postgres `statement_timeout` — schema transactions | 60 s |
+| Postgres `lock_timeout` — schema transactions | 5 s |
+| pgx pool max connections | 10 |
 | Request body cap — record-write routes (`.../records` create/update) | 5 MiB |
 | Request body cap — all other routes (auth, presign, finalize, etc.) | 64 KiB |
 
@@ -75,17 +79,22 @@ The media bucket needs a CORS policy and an origin that is isolated from the adm
 - **Database — PITR required.** Point-in-time recovery via either managed Postgres with PITR enabled, or self-hosted WAL archiving (pgBackRest or WAL-G), operated per the restore-drill runbook below. Targets: **RPO ≤ 5 minutes, RTO ≤ 1 hour** (N-12).
 - Scheduled `pg_dump` remains the portable second copy — the schema uses no non-bundled extensions (N-9), so any PostgreSQL 16+ restores it. `pg_dump` complements PITR (environment portability, an independent copy) but does not by itself meet the RPO/RTO targets.
 - **Object storage:** bucket versioning covers media; `cms_media.object_key` values are the join between a database restore and the bucket.
+- **Cross-store consistency:** the bucket is not point-in-time consistent with database PITR: a restore to time T resurrects `cms_media` rows whose objects were deleted after T (their delivery URLs 404) and leaves objects finalized after T unreferenced — acceptable residue, cleaned manually if it matters. After any restore, spot-check recent media rows against the bucket.
 - **Restore order:** database first (from PITR or the latest `pg_dump`, depending on the scenario), then verify bucket reachability, then start the binary — startup migration idempotency tolerates a dump taken mid-version.
 - A restore drill is required before the V1 release (N-12; see Runbooks below).
 - Schema export/import (V2, F-25) complements this for environment promotion; it does not replace PITR/`pg_dump` for disaster recovery.
 
 ## Runbooks
 
-**JWT key rotation** (BR-AUTH-10; mechanics in `05-auth-security.md` §3): generate a successor RSA-2048 keypair with a new `kid` → begin issuing with the new key while continuing to verify tokens against both `kid`s → retire the old key row once 15 minutes (the maximum JWT TTL) have passed, so no live token can still reference it. **Master-secret-loss recovery:** if `CMS_MASTER_SECRET` is lost, regenerate the keypair; outstanding access JWTs (≤15 minutes old) fail verification, and clients silently re-issue via their refresh tokens — opaque hashed rows independent of the RSA key — so no re-login is required (`05-auth-security.md` §3).
+**JWT key rotation** (BR-AUTH-10; mechanics in `05-auth-security.md` §3): generate a successor RSA-2048 keypair with a new `kid` → begin issuing with the new key while continuing to verify tokens against both `kid`s → retire the old key row once 15 minutes (the maximum JWT TTL) have passed, so no live token can still reference it. **Master-secret-loss recovery:** if `CMS_MASTER_SECRET` is lost, regenerate the keypair; outstanding access JWTs (≤15 minutes old) fail verification, and clients silently re-issue via their refresh tokens — opaque hashed rows independent of the RSA key — so no re-login is required (`05-auth-security.md` §3). **Master-secret rotation:** identical to loss recovery — set the new `CMS_MASTER_SECRET` and restart; the binary regenerates the keypair, outstanding ≤15-minute JWTs fail verification, and clients silently re-issue via refresh tokens. No dual-secret machinery exists or is needed.
 
 **Super-admin recovery** (BR-AUTH-12): set `CMS_RECOVERY_EMAIL` to an existing admin's email address and restart the binary. Startup step 5 above logs the single-use recovery token once at `warn`; visit `/recover` and consume the token within 30 minutes to set a new password and revoke that user's sessions. Unset the variable again afterward — it is a one-time gate, not standing configuration.
 
-**Restore drill** (N-12, required before V1 ships): provision a scratch Postgres instance, restore the most recent PITR base-plus-WAL (or the latest `pg_dump`) into it, point a binary at it, and confirm collection data and system tables are intact and the schema cache loads cleanly. Record the wall-clock time from "declare an outage" to "binary serving traffic again" against the RTO ≤ 1 hour target, and the data-loss window against the RPO ≤ 5 minute target. Re-run whenever the backup mechanism or provider changes.
+**Restore drill** (N-12, required before V1 ships): provision a scratch Postgres instance, restore the most recent PITR base-plus-WAL (or the latest `pg_dump`) into it, point a binary at it, and confirm collection data and system tables are intact and the schema cache loads cleanly. Record the wall-clock time from "declare an outage" to "binary serving traffic again" against the RTO ≤ 1 hour target, and the data-loss window against the RPO ≤ 5 minute target. Re-run whenever the backup mechanism or provider changes. The drill also verifies bucket reachability and spot-checks the most recent media rows against their objects (cross-store consistency above).
+
+**Postgres keepalive tuning** (BR-RUNTIME-8): set `tcp_keepalives_idle=60`, `tcp_keepalives_interval=10`, `tcp_keepalives_count=3` (or `idle_session_timeout` on managed Postgres) so a dead process's session releases the instance lock within roughly two minutes — inside the startup retry window.
+
+**Cache-contract smoke check** (BR-API-5, BR-API-6): curl an anonymous public GET twice through the edge and confirm the response carries `s-maxage=60` and the second request is served from cache; repeat with an `Authorization` header and confirm `Cache-Control: no-store`; send `If-None-Match` with the received ETag and confirm `304 Not Modified`. Run after any proxy configuration change.
 
 **Hot-DDL guidance** (`03-dynamic-schema.md`): field type changes and V2 FTS `tsvector` rebuilds hold `ACCESS EXCLUSIVE` on the target table for the rewrite's duration — reads stall, not just writes. Run these off-peak; `schema.Engine.Apply` logs each operation's duration (`08-observability.md`), so operators can see the actual stall window rather than guess at it.
 
