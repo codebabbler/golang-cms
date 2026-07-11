@@ -1,6 +1,6 @@
 # 04 — API Layer
 
-**Version:** 1.0 · **Last Updated:** 2026-07-07 · **Owner:** Miraj Aryal
+**Version:** 1.1 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
 
 This document specifies the HTTP surface: routes, the normative middleware order, the response envelope, pagination, filtering, relation expansion, and the upload flow. Every handler composes the interfaces of `02-core-interfaces.md`; no handler builds SQL or bypasses `Document.Set`.
 
@@ -13,10 +13,14 @@ This document specifies the HTTP surface: routes, the normative middleware order
 | `/api/admin/collections` | session | Schema management — the `schema.Engine` operations of `03-dynamic-schema.md`. |
 | `/api/admin/collections/{slug}/records` | session | Full CRUD, trash view, restore, purge, revisions, publish/unpublish. |
 | `/api/admin/media` | session | `presign`, `finalize`, listing. |
-| `/api/auth/*` | none → JWT | End-user `register`, `login`, `refresh`, `logout` (F-11). |
-| `/api/collections/{slug}/records` | API key or JWT or anonymous | Published-scope reads; writes per API-key scope or end-user access rules. |
+| `/api/v1/auth/*` | none → JWT | End-user `register`, `login`, `refresh`, `logout`, `password-reset/request`, `password-reset/confirm` (F-11, BR-AUTH-13). |
+| `/api/v1/collections/{slug}/records` | API key or JWT or anonymous | Published-scope reads; writes per API-key scope or end-user access rules. |
+| `/recover` | none → active only in recovery mode | Consumes the single-use super-admin recovery token, resets the target user's password, and revokes their sessions (BR-AUTH-12); returns `404` when recovery mode is not active. |
 | `/healthz` | none | Liveness (`09-deployment.md`). |
+| `/readyz` | none | Readiness — database ping; see `08-observability.md`, `09-deployment.md`. |
 | `/*` | none | Embedded SPA — hashed assets immutable, `index.html` no-cache. |
+
+The envelope and error registry are v1-stable and evolve additively only.
 
 ## Middleware Order (Normative)
 
@@ -37,6 +41,8 @@ Success:
 { "data": ..., "meta": { "pagination": { "limit": 25, "offset": 0, "total": 1042 } } }
 ```
 
+`meta.pagination.total` appears only when the request includes `?count=exact`; public consumers default to no count (an unqualified `COUNT` is an expensive scan), and the admin UI requests it where its tables need totals.
+
 Error — one shape everywhere, written only by `httpapi.WriteError` (BR-API-3):
 
 ```json
@@ -54,19 +60,33 @@ Error — one shape everywhere, written only by `httpapi.WriteError` (BR-API-3):
 | `payload_too_large` | 413 | Presign size over cap; request bodies over limit. |
 | `internal` | 500 | Recovered panics; post-schema-change stale-plan window (EC-1, `03-dynamic-schema.md`). |
 
+Request-body caps producing `payload_too_large`: **5 MiB** on record-write routes (`.../records` create/update, sized to accommodate the 1 MiB per-field cap with headroom), **64 KiB** on every other route (auth, presign, finalize, and all remaining non-content routes).
+
 ## Pagination (BR-API-1)
 
-**V1 — capped offset.** `?limit=` defaults 25, clamps to 100. `?offset=` beyond 10,000 returns `400 validation_failed` — offset scans are O(offset), and the cap converts an abuse vector into a documented boundary. Every list appends the `id` tiebreaker after the requested sort, making pagination stable under concurrent writes. *(Resolves EC-11.)*
+**V1 — capped offset.** `?limit=` defaults 25, clamps to 100. `?offset=` beyond 10,000 returns `422 validation_failed` — offset scans are O(offset), and the cap converts an abuse vector into a documented boundary. Every list appends the `id` tiebreaker after the requested sort, making pagination stable under concurrent writes. *(Resolves EC-11.)*
 
-**V2 — keyset cursors (F-27).** List responses gain `meta.pagination.next_cursor`, an opaque base64 encoding of the sort key + `id` of the last row. `?cursor=` and `?offset=` are mutually exclusive (422 if both). Cursors serve arbitrarily deep traversal at O(1) per page; the public API documents cursors as the primary mechanism from V2 onward, retaining capped offset for compatibility.
+**V1 — keyset cursors (admin lists).** Admin list endpoints also accept `?cursor=`, an opaque base64 encoding of the sort key + `id` of the last row, and return `meta.pagination.next_cursor` for the next page. `cursor` and `offset` are mutually exclusive — supplying both returns `422 validation_failed`. Cursor pagination lets the admin UI page past the 10,000-row offset ceiling at O(1) per page while preserving the mandatory `id` tiebreaker and the limit clamp (`02-core-interfaces.md` invariant 7).
 
-## Filtering and Sorting
+**V2 — public exposure of the V1 mechanism (F-27).** The public API (`/api/v1/collections/{slug}/records`) gains the same `?cursor=` / `meta.pagination.next_cursor` mechanism already built for admin lists, alongside capped offset retained for compatibility.
 
-`?filter[<field>][<op>]=<value>` with `op ∈ eq, neq, lt, lte, gt, gte, in, contains`; `?sort=<field>` / `?sort=-<field>`. Fields must exist in the schema snapshot and survive `Decision.FieldRules` visibility; violations return `422` naming the field. All composition happens inside `query.Builder` — operators are a closed set, and `contains` maps to `ILIKE` with escaped wildcards on `text` fields only.
+## Filtering and Sorting (BR-API-4)
+
+`?filter[<field>][<op>]=<value>` with `op ∈ eq, neq, lt, lte, gt, gte, in, contains`; `?sort=<field>` / `?sort=-<field>`. Fields must exist in the schema snapshot and survive `Decision.FieldRules` visibility. `ScopePublic` queries additionally accept `filter`/`sort` only on fields marked `indexed` or `unique`; a request naming any other field returns `422 validation_failed` naming the offending field. `ScopeAdmin` and `ScopeTrash` accept any schema field, still subject to `Decision.FieldRules` visibility and the query's `statement_timeout`. All composition happens inside `query.Builder` — operators are a closed set, and `contains` maps to `ILIKE` with escaped wildcards on `text` fields only.
+
+## Caching (BR-API-5)
+
+Anonymous `ScopePublic` GETs carry `Cache-Control: public, s-maxage=60, stale-while-revalidate=60` and a strong `ETag`. Any request bearing `Authorization` or a cookie receives `Cache-Control: no-store` — without exception; a cacheable credentialed response is a security bug, not a performance optimization. Both cases add `Vary: Authorization` so shared caches never conflate anonymous and credentialed results. V1 has no purge-on-publish signal, so a published change may take up to 60 seconds to reach an edge cache — an accepted propagation window, documented here rather than engineered away. V2 adds purge-on-publish webhooks, at which point cache TTLs can lengthen.
+
+## Idempotent Creates
+
+Public and API-key `POST` create endpoints under `/api/v1/collections/{slug}/records` accept an optional `Idempotency-Key` request header (≤128 bytes).
+
+Supplying the same `Idempotency-Key` from the same principal again within a 24-hour window returns the original creation result instead of creating a duplicate record. Keys are tracked in `cms_idempotency_keys` (`key_hash`, `principal_id`, `record_id`, `created_at`; unique on `(key_hash, principal_id)`; see `07-data-model.md`) and purged by `jobs.Retention` 24 hours after creation.
 
 ## Relation Expansion
 
-`?expand=<relationField>` resolves one level deep (no nesting in V1). Expanded targets load through `ScopePublic` on public routes: a target that is trashed, draft, or hidden by access rules serializes as `null` rather than leaking or erroring — the read-side half of publish-referencing-trashed semantics (BR-LIFE-6). Unexpanded relation fields serialize as the bare UUID. *(Resolves EC-7.)*
+`?expand=<relationField>` resolves one level deep (no nesting in V1). Expanded targets load through `ScopePublic` on public routes: a target that is trashed, draft, or hidden by access rules serializes as `null` rather than leaking or erroring — the read-side half of publish-referencing-trashed semantics (BR-LIFE-6). Unexpanded relation fields serialize as the bare UUID. Expansion resolves each relation field with a single batched IN query per field, never per-row lookups. *(Resolves EC-7.)*
 
 ## Upload Flow (BR-MEDIA-1/2/3)
 
@@ -77,6 +97,8 @@ Error — one shape everywhere, written only by `httpapi.WriteError` (BR-API-3):
 3. POST /api/admin/media/finalize { mediaId }
    → 200 { media }                                 storage HEAD must confirm object ≤ declared size
 ```
+
+Presign validates the declared `mime` against a closed, compile-time V1 allowlist — raster images, video, audio, and PDF; any other type is rejected before a presigned URL is issued (no admin-configurable allowlist exists in V1). The declared `Content-Type` is signed into the presign policy and re-verified against the storage `HEAD` response at finalize, so a client cannot swap in an undeclared type after the presign step.
 
 Presigned URLs expire in 15 minutes and embed a `content-length-range` condition. A client that uploads but never finalizes — or presigns and never uploads — leaves a `pending` row: the hourly orphan sweep deletes the storage object (when present) and the row after 24 hours. `Document.Set` rejects `media` field values referencing non-finalized records, so no published content ever points at an unverified object. *(Resolves EC-9.)*
 
@@ -90,4 +112,4 @@ Presigned URLs expire in 15 minutes and embed a `content-length-range` condition
 |---|---|
 | EC-7 | Expansion serializes non-published/trashed targets as `null` under `ScopePublic` (Relation Expansion) |
 | EC-9 | 15-min presign expiry + finalize verification + 24 h orphan sweep (Upload Flow) |
-| EC-11 | Limit clamp, offset ceiling with 400, mandatory `id` tiebreaker; V2 cursors for deep traversal (Pagination) |
+| EC-11 | Limit clamp, offset ceiling with 422, mandatory `id` tiebreaker; V1 keyset cursors for admin lists, V2 exposes the same mechanism publicly (Pagination) |
