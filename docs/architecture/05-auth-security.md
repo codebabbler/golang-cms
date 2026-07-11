@@ -14,7 +14,7 @@ Three principal types, three different threat models, three different mechanisms
 
 - **Login:** returns 200 with `Set-Cookie: cms_session=<256-bit-random>; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=604800`; the body includes `csrfToken` (BR-AUTH-1). Both the session ID and the CSRF token rotate on every successful login — a session or CSRF value established before authentication is discarded, defeating fixation.
 - The cookie value is the lookup key. The database stores only the hash: `(token_hash, user_id, created_at, last_seen_at, ip, user_agent)` in `cms_sessions` (BR-AUTH-2). Session theft via database read yields nothing replayable. Session tokens are random 256-bit values verified by hashed lookup; no signing is involved. `CMS_MASTER_SECRET` is the root secret for at-rest encryption of system key material (§3) and plays no role in sessions.
-- **Password hashing:** Argon2id with per-hash salts (BR-AUTH-3), parameters pinned at 64 MiB memory, 3 iterations, parallelism 2. Password policy is length-only — no composition rules: minimum 10 characters for admins, 8 characters for end users.
+- **Password hashing:** Argon2id with per-hash salts (BR-AUTH-3), parameters pinned at 64 MiB memory, 3 iterations, parallelism 2. These parameters apply to all principal kinds. Password policy is length-only — no composition rules: minimum 10 characters for admins, 8 characters for end users.
 - **CSRF:** every state-changing admin request carries `X-CSRF-Token`, validated against the session's `csrf_hash` (BR-AUTH-4). The SPA holds the token in memory only (`06-admin-ui.md`).
 - **Expiry:** 7 days idle, 30 days absolute. Destructive operations (schema drops, purges, key revocation) require re-authentication within the preceding 4 hours — `middleware.RequireRecentAuth` (BR-AUTH-5).
 - **Rate limiting:** 10 attempts/15 min per email, 30 attempts/15 min per IP (BR-AUTH-6), evaluated before Argon2id work (`04-api-layer.md` middleware order).
@@ -22,9 +22,9 @@ Three principal types, three different threat models, three different mechanisms
 
 ### Recovery Mode (BR-AUTH-12)
 
-When `CMS_RECOVERY_EMAIL` is set at startup **and** names an existing `cms_users` row, `auth.Recovery` generates a 256-bit single-use recovery token, logs it once at `warn`, and enables `/recover`. The route accepts the token exactly once to set a new password for that user and revokes all of that user's sessions. The token dies on use, after 30 minutes, or on process exit; `/recover` returns 404 whenever recovery mode is not active. An unset `CMS_RECOVERY_EMAIL` means the feature is entirely absent — no route, no token, no log line. This mirrors BR-AUTH-11's bootstrap pattern and shares its log-exception treatment (`08-observability.md`).
+When `CMS_RECOVERY_EMAIL` is set at startup **and** names an existing `cms_users` row, `auth.Recovery` generates a 256-bit single-use recovery token, logs it once at `warn`, and enables `/recover`. The route accepts the token exactly once to set a new password for that user and revokes all of that user's sessions. The token dies on use, after 30 minutes, or on process exit; `/recover` returns 404 whenever recovery mode is not active. An unset `CMS_RECOVERY_EMAIL` means the feature is entirely absent — no route, no token, no log line. This mirrors BR-AUTH-11's bootstrap pattern and shares its log-exception treatment (`08-observability.md`). A `CMS_RECOVERY_EMAIL` naming no existing user logs one `warn` line and enables nothing.
 
-**Admin-issued resets:** a super admin can generate a one-time reset token for any admin from the users screen; an admin can do the same only for non-super-admin targets (P-2 limits). The token displays exactly once (BR-AUTH-7 style), is conveyed out-of-band by the operator, and is consumed at a reset screen. This reuses the `cms_reset_tokens` mechanics described under Password Reset (§3) — same table, same hashing, same single-use/expiry discipline.
+**Admin-issued resets:** a super admin can generate a one-time reset token for any admin from the users screen; an admin can do the same only for non-super-admin targets (P-2 limits). The token displays exactly once (BR-AUTH-7 style), is conveyed out-of-band by the operator, and is consumed at a reset screen. This reuses the `cms_reset_tokens` mechanics described under Password Reset (§3) — same table, same hashing, same single-use/expiry discipline. Consuming an admin-issued reset token revokes all of the target user's sessions, exactly as recovery mode does.
 
 ## 2. API Keys (Server-to-Server)
 
@@ -62,14 +62,14 @@ For when the CMS acts as the user store (`cms_end_users`) for a client applicati
 
 Rate limiting keys on client IP, and the binary deploys behind an edge proxy (`09-deployment.md`) — so IP resolution must resist spoofing:
 
-- If the direct socket peer is a loopback address, an RFC1918 private address, or falls within a CIDR listed in `CMS_TRUSTED_PROXY_CIDRS`, the limiter uses the **rightmost entry of `X-Forwarded-For` that is not itself trusted** — the address the outermost trusted proxy appended, immune to client-supplied prefix entries.
+- If the direct socket peer is a loopback address, an RFC1918 private address, or falls within a CIDR listed in `CMS_TRUSTED_PROXY_CIDRS`, the limiter uses the **rightmost entry of `X-Forwarded-For` that is not itself trusted** — the address the outermost trusted proxy appended, immune to client-supplied prefix entries. If no untrusted entry exists (XFF absent, or every entry trusted), the limiter uses the socket address.
 - Otherwise (the direct peer is untrusted) the limiter uses the socket address and **ignores** `X-Forwarded-For` entirely.
 - An empty `CMS_TRUSTED_PROXY_CIDRS` preserves prior behavior exactly (loopback/RFC1918 trust only) — the variable is additive, never required.
 - The deployment contract requires trusted proxies to append to (never blindly forward) `X-Forwarded-For`; `09-deployment.md` states this as a hard requirement and documents the Cloudflare-ranges configuration for `CMS_TRUSTED_PROXY_CIDRS`.
 
-This rule is deterministic and fails safe: an unlisted or misconfigured proxy degrades to per-proxy-IP limiting rather than unlimited requests. *(Resolves EC-10.)*
+This rule is deterministic and fails safe: an unlisted proxy degrades to per-proxy-IP limiting rather than unlimited requests; a listed proxy that blind-forwards `X-Forwarded-For` is guarded by the append requirement above, not by this fallback. *(Resolves EC-10.)*
 
-**Rate limiting extensions and enumeration posture:** `register` and `refresh` adopt BR-AUTH-6's existing numbers — 10 attempts/15 min per email (or per subject, for `refresh`), 30 attempts/15 min per IP. `login` and `register` return uniform errors and always perform one Argon2id verification, even against an unknown email, so neither response shape nor timing discloses account existence. The per-email limiter carries a deliberate trade-off: an attacker who knows a victim's email can lock out that victim's own login attempts for the rate-limit window (targeted lockout); this is accepted because the alternative — no per-email limit — permits unbounded per-account credential brute force, which is the worse outcome.
+**Rate limiting extensions and enumeration posture:** `register` and `refresh` adopt BR-AUTH-6's existing numbers — 10 attempts/15 min per email (per end user, for `refresh`), 30 attempts/15 min per IP. `login` and `register` return uniform errors and always perform one Argon2id verification, even against an unknown email, so neither response shape nor timing discloses account existence. The per-email limiter carries a deliberate trade-off: an attacker who knows a victim's email can lock out that victim's own login attempts for the rate-limit window (targeted lockout); this is accepted because the alternative — no per-email limit — permits unbounded per-account credential brute force, which is the worse outcome.
 
 ## 6. Threat Model Summary
 
@@ -82,7 +82,7 @@ This rule is deterministic and fails safe: an unlisted or misconfigured proxy de
 - Refresh token replay mitigated by token-family revocation (BR-AUTH-9).
 - IP spoofing against rate limits mitigated by the proxy-trust rule of §5.
 - SSRF (V2 webhooks) mitigated by denying private/link-local/loopback delivery targets, re-resolving DNS at delivery time, and never following redirects into private address space.
-- User enumeration mitigated by uniform errors and constant Argon2id work on `login`, `register`, and `password-reset/confirm` (§5); `password-reset/request`'s trusted-caller exception is deliberate and scoped to API-key callers only (§3).
+- User enumeration mitigated by uniform errors on the public endpoints (`confirm`, `login`, `register`); constant Argon2id work on `login`/`register` (§5); `password-reset/request`'s trusted-caller exception is deliberate and scoped to API-key callers only (§3).
 - Targeted rate-limit lockout is an accepted trade-off of the per-email limiter (§5), traded against unbounded per-account brute force.
 - Malicious media hosting mitigated by the MIME allowlist enforced at presign (`04-api-layer.md`) and origin isolation between the media bucket and the admin UI origin (`09-deployment.md`).
 - DB-read key theft mitigated by at-rest encryption of `cms_system_keys.private_pem` under `CMS_MASTER_SECRET` (§3, BR-AUTH-10) — a database read alone no longer yields a usable signing key.

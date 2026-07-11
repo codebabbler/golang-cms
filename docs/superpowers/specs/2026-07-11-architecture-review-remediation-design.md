@@ -104,7 +104,7 @@ When `CMS_RECOVERY_EMAIL` is set at startup **and** names an existing `cms_users
 
 ### 2.2 Admin-issued resets
 
-A super admin (or admin, for non-super-admin targets per P-2 limits) generates a one-time reset token from the users screen; the token is displayed once (BR-AUTH-7 style), conveyed out-of-band, and consumed at a reset screen. Uses the same `cms_reset_tokens` mechanics as §2.3.
+A super admin (or admin, for non-super-admin targets per P-2 limits) generates a one-time reset token from the users screen; the token is displayed once (BR-AUTH-7 style), conveyed out-of-band, and consumed at a reset screen. Uses the same `cms_reset_tokens` mechanics as §2.3. Consuming an admin-issued reset token revokes all of the target user's sessions.
 
 ### 2.3 End-user password reset API — new **BR-AUTH-13**
 
@@ -123,7 +123,7 @@ New table **`cms_reset_tokens`**: `id`, `user_kind` (`admin`|`end_user`), `user_
 
 ### 2.5 Proxy trust — replaces 05 §5 heuristic (resolves AR-4, EC-10)
 
-New env **`CMS_TRUSTED_PROXY_CIDRS`** (comma-separated). Resolution rule: if the direct peer is loopback, RFC1918, **or within a listed CIDR**, take the rightmost `X-Forwarded-For` entry that is *not* itself trusted; otherwise use the socket address and ignore XFF. Empty variable preserves today's behavior exactly. 09's proxy contract documents the Cloudflare-ranges one-liner and the failure mode (unlisted proxy ⇒ per-proxy-IP limiting — fails closed).
+New env **`CMS_TRUSTED_PROXY_CIDRS`** (comma-separated). Resolution rule: if the direct peer is loopback, RFC1918, **or within a listed CIDR**, take the rightmost `X-Forwarded-For` entry that is *not* itself trusted; otherwise use the socket address and ignore XFF. Empty variable preserves today's behavior exactly. 09's proxy contract documents the Cloudflare-ranges one-liner and the failure mode (unlisted proxy ⇒ per-proxy-IP limiting — fails closed). If no untrusted XFF entry exists (header absent, or every entry trusted), the limiter uses the socket address.
 
 ### 2.6 Auth hygiene bundle (resolves AR-8, AR-24, AR-25)
 
