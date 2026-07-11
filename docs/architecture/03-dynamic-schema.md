@@ -63,7 +63,7 @@ DropField and DropCollection demand (a) re-authentication within the preceding 4
 
 ## Collection Rename (EC-4)
 
-`cms_revisions`, relation FKs, and record IDs reference collections by `cms_collections.id` (UUID), never by slug — a rename therefore touches exactly two things in one transaction: the `slug` column in `cms_collections` and the physical table name. History, relations, and revisions survive untouched. The observable consequence is that API paths (`/api/collections/<slug>/...`) change immediately; the response to a stale path is `404`, and V2 redirects (F-21) can bridge public-facing paths. The admin UI surfaces this consequence in the rename confirmation dialog. *(Resolves EC-4.)*
+`cms_revisions`, relation FKs, and record IDs reference collections by `cms_collections.id` (UUID), never by slug — a rename therefore touches exactly two things in one transaction: the `slug` column in `cms_collections` and the physical table name. History, relations, and revisions survive untouched. The observable consequence is that API paths (`/api/v1/collections/<slug>/...`) change immediately; the response to a stale path is `404`, and V2 redirects (F-21) can bridge public-facing paths. The admin UI surfaces this consequence in the rename confirmation dialog. *(Resolves EC-4.)*
 
 ## Revision Restore After Schema Drift (EC-5)
 

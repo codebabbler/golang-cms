@@ -46,7 +46,7 @@ For when the CMS acts as the user store (`cms_end_users`) for a client applicati
 
 ### Password Reset (BR-AUTH-13)
 
-- `POST /api/v1/auth/password-reset/request {email}` — requires an API key whose scopes carry `"passwordReset": true` (`12-access-rules.md` §1). Returns `{resetToken, expiresAt}` to the consuming app, which delivers it to the user through its own channel. An unknown email returns `404 not_found`: the caller is a trusted server holding a key, so the enumeration protection described in §5 does not apply here — it applies only to the public endpoints (`confirm`, `login`, `register`).
+- `POST /api/v1/auth/password-reset/request {email}` — requires an API key whose scopes carry `"passwordReset": true` (`12-access-rules.md` §6). Returns `{resetToken, expiresAt}` to the consuming app, which delivers it to the user through its own channel. An unknown email returns `404 not_found`: the caller is a trusted server holding a key, so the enumeration protection described in §5 does not apply here — it applies only to the public endpoints (`confirm`, `login`, `register`).
 - `POST /api/v1/auth/password-reset/confirm {token, newPassword}` — public. On success: the password updates, **every refresh-token family for that user is revoked**, and the token is marked used.
 - Reset tokens store hashed in `cms_reset_tokens`, expire in 30 minutes, and are single-use. The binary never sends email; delivery is the consuming application's responsibility.
 

@@ -18,7 +18,7 @@ Distilled from `docs/architecture/05-auth-security.md`, `docs/BUSINESS_RULES.md`
 | API keys | sha256 (BR-AUTH-7) | `cms_api_keys.token_hash` |
 | Refresh tokens | sha256 (BR-AUTH-9) | `cms_refresh_tokens.token_hash` |
 
-Raw token values never persist and never log — no exceptions, any level (`docs/architecture/08-observability.md`). `CMS_SESSION_SECRET` signs cookies; it plays no role in password hashing.
+Raw token values never persist and never log, with two sanctioned exceptions: the single-use setup and recovery tokens (BR-AUTH-11/12), each logged once at `warn` with a 30-minute TTL (`docs/architecture/08-observability.md`). `CMS_MASTER_SECRET` encrypts system key material at rest (BR-AUTH-10); it plays no role in signing — session tokens are random 256-bit values verified by hashed lookup, never signed.
 
 ## Hard Rules
 

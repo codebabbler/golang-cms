@@ -13,7 +13,7 @@ Headless, config-driven CMS: one Go binary, one tenant. Admins define collection
 | `docs/BUSINESS_RULES.md` | All invariants (BR-IDs) with enforcement points; tests trace to these |
 | `docs/REQUIREMENTS.md` | PRD: personas, F/N/O requirements, acceptance criteria (UAC) |
 | `docs/architecture/00-README.md` | Reading order and identifier conventions |
-| `docs/architecture/01-system-overview.md` | Architecture, request flows, Edge-Case Register (EC-1…15) |
+| `docs/architecture/01-system-overview.md` | Architecture, request flows, Edge-Case Register (EC-1…16) |
 | `docs/architecture/02-core-interfaces.md` | QueryBuilder, Decision evaluator, Document.Set, service contracts |
 | `docs/architecture/03-dynamic-schema.md` | Runtime-DDL engine: whitelist, conversion matrix, drift mapping |
 | `docs/architecture/04-api-layer.md` | Routes, middleware order, envelope, pagination, uploads |

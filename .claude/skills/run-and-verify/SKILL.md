@@ -26,7 +26,7 @@ Tear down with `docker stop cms-pg` (container is `--rm`). Never point a dev bin
 
 ## Environment
 
-Minimum to boot: `DATABASE_URL` plus `CMS_SESSION_SECRET` (any 32+ random bytes). All variables: `docs/BUSINESS_RULES.md` § Naming Constants. Without the `S3_*`/`R2_*` variables the binary boots and everything except media flows works — media smoke steps below are skipped in that case.
+Minimum to boot: `DATABASE_URL` plus `CMS_MASTER_SECRET` (any 32+ random bytes). All variables: `docs/BUSINESS_RULES.md` § Naming Constants. Without the `S3_*`/`R2_*` variables the binary boots and everything except media flows works — media smoke steps below are skipped in that case.
 
 ## Build and Run
 
@@ -43,7 +43,7 @@ Startup failure exits non-zero listing every missing env var at once. Migration 
 1. `curl -fsS localhost:8080/healthz` → 200.
 2. **Fresh system:** grab the single-use setup token from the startup `warn` log (BR-AUTH-11), open `/setup`, create the first super admin. Re-running against a used system: `/setup` is 404 — expected.
 3. Log in; create a collection with a `text` field (UAC-1.1: table `c_<slug>` exists — verify with `psql "$DATABASE_URL" -c '\d c_<slug>'`).
-4. Create a record → publish → fetch through `/api/collections/<slug>/records` unauthenticated → the published record returns (UAC-1.2).
+4. Create a record → publish → fetch through `/api/v1/collections/<slug>/records` unauthenticated → the published record returns (UAC-1.2).
 5. Update with a stale `version` → expect `409 conflict` (UAC-1.4).
 6. Trash the record → gone from public list; restore → back (UAC-1.4).
 7. With `S3_*` configured: presign → PUT → finalize → attach to a `media` field (UAC-1.5). Skip without S3 env.

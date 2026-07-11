@@ -35,7 +35,7 @@ golang-cms is a headless, config-driven CMS delivered as a single Go binary serv
 - **F-9 (V1).** Admins authenticate with email + Argon2id-hashed password, receive an HttpOnly session cookie plus CSRF token, and re-authenticate within 4 hours for destructive operations.
 - **F-10 (V1).** Super Admins issue, scope, and revoke API keys; keys display once and authenticate server-to-server reads and writes per scope.
 - **F-11 (V1).** The CMS acts as the user store for client applications: end users register and log in, receive a 15-minute RS256 JWT plus rotating refresh token, and lose the whole token family on refresh-token reuse. *(Resolves EC-8 via BR-AUTH-9.)*
-- **F-12 (V1).** Per-collection access rules (read/create/update/delete) with row predicates (e.g., `ownerOnly`) and field-level visibility (`hideFromRoles`, `readOnlyForRoles`) gate every request; missing rules deny.
+- **F-12 (V1).** Per-collection access rules (read/create/update/delete/publish) with row predicates (e.g., `ownerOnly`) and field-level visibility (`hideFrom`, `readOnlyFor` audience lists) gate every request; missing rules deny for the governed classes.
 - **F-13 (V1).** Media uploads flow directly to object storage via presigned PUT URLs with size caps; the binary finalizes media records and serves delivery URLs.
 - **F-14 (V1).** The embedded admin UI covers schema building, content editing with Tiptap rich text (stored as JSONB), revision management, trash, user/key management, and access-rule editing.
 - **F-15 (V1).** List endpoints paginate with capped limit/offset and a stable sort; excessive offsets reject. *(Resolves EC-11 via BR-API-1.)* Admin lists additionally support keyset cursor pagination from V1.
