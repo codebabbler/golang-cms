@@ -1,6 +1,6 @@
 # 01 — System Overview
 
-**Version:** 1.1 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
+**Version:** 1.2 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
 
 ## What the System Is
 
@@ -13,7 +13,8 @@ golang-cms is a headless, config-driven CMS compiled into one Go binary that ser
                         │                 Go binary                   │
  Admin browser ───────► │ httpapi (chi)                               │
  API consumer ────────► │  ├─ middleware: RequestID → Logger →        │
- End-user client ─────► │  │   RateLimit → Auth (Session|APIKey|JWT)  │
+ End-user client ─────► │  │   Recover → RateLimit → Auth             │
+                        │  │   (Session|APIKey|JWT)                   │
                         │  │   → RequireCSRF → RequireRecentAuth      │
                         │  ├─ access.Evaluator ─ Decision{Allowed,    │
                         │  │                      Predicate}          │
@@ -55,7 +56,7 @@ Each collection is a real table `c_<slug>` carrying seven system columns (`id`, 
 
 ## Lifecycle Summary
 
-Startup: embedded migrations under advisory lock → instance lock (BR-RUNTIME-8) → schema cache load → HTTP listener; the publisher's first tick runs the missed-schedule catch-up (BR-RUNTIME-3, BR-LIFE-9). *(Resolves EC-16.)* The instance lock prevents accidental second running instances. HTTP `/healthz` and `/readyz` reflect process liveness and database readiness respectively (`08-observability.md`). Shutdown: drain in-flight requests within 15 seconds (BR-RUNTIME-6). Background work is two in-process tickers — `jobs.Retention` (trash purge, revision pruning, orphan sweep) and `jobs.Publisher` (V2 scheduled publishing) — never external queues (BR-RUNTIME-5).
+Startup: embedded migrations under advisory lock → instance lock (BR-RUNTIME-8) → schema cache load → HTTP listener; the publisher's first tick (V2) runs the missed-schedule catch-up (BR-RUNTIME-3, BR-LIFE-9). *(Resolves EC-16.)* The instance lock prevents accidental second running instances; it lives on a dedicated watched connection, and losing it terminates the process (BR-RUNTIME-8). HTTP `/healthz` and `/readyz` reflect process liveness and database readiness respectively (`08-observability.md`). Shutdown: drain in-flight requests within 15 seconds (BR-RUNTIME-6). Background work is two in-process tickers — `jobs.Retention` (trash purge, revision pruning, orphan sweep) and `jobs.Publisher` (V2 scheduled publishing) — never external queues (BR-RUNTIME-5).
 
 ## Edge-Case Register
 

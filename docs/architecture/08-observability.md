@@ -1,6 +1,6 @@
 # 08 — Observability
 
-**Version:** 1.1 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
+**Version:** 1.2 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
 
 Structured logs are the telemetry surface. The binary ships no metrics endpoint and no tracing dependency in V1 — adding either would breach the dependency invariant's spirit of operational minimalism (BR-RUNTIME-2); log-derived dashboards cover the single-tenant operational questions.
 
@@ -14,7 +14,7 @@ Structured logs are the telemetry surface. The binary ships no metrics endpoint 
 ```
 
 - Routes log as chi patterns, not raw paths — no record IDs or slugs leak into aggregatable fields; raw paths appear only at `debug`.
-- Secrets never log: no tokens, cookie values, password material, presigned URLs, or JWT bodies at any level. The API-key `cms_` prefix makes accidental leakage greppable in CI log-assertion tests. Sole exceptions: the single-use setup (BR-AUTH-11) and recovery (BR-AUTH-12) tokens, logged once at `warn` with a 30-minute TTL.
+- Secrets never log: no tokens, cookie values, password material, presigned URLs, or JWT bodies at any level. The API-key `cms_` prefix makes accidental leakage greppable in CI log-assertion tests. Sole exceptions: the single-use setup (BR-AUTH-11) and recovery (BR-AUTH-12) tokens, logged once at `warn` with a 30-minute TTL and emitted regardless of `CMS_LOG_LEVEL`.
 - Recovered panics log at `error` with stack traces and the request ID, then return the `internal` envelope (`04-api-layer.md`).
 
 ## Request Correlation
@@ -37,7 +37,7 @@ V1 sink — a distinguished `slog` line:
 
 Both tickers log start/finish with counts and durations. Tickers wrap each tick in panic recovery: a panicking job logs at `error` and skips to the next tick.
 
-- `jobs.Retention` (hourly): expired sessions purged, used or expired reset tokens purged, rotated or revoked refresh tokens > 30 days purged, trashed rows purged, purges skipped on FK RESTRICT (each skip names the blocking reference), revisions pruned, idempotency rows > 24 h purged, media orphans swept.
+- `jobs.Retention` (hourly): expired sessions purged, used or expired reset tokens purged, rotated or revoked refresh tokens > 30 days purged, trashed rows purged, purges skipped on FK RESTRICT (each skip names the blocking reference), revisions pruned, idempotency rows > 24 h purged, media orphans swept, media deletion-queue entries older than 1 h retried (BR-MEDIA-5).
 - `jobs.Publisher` (V2, every 30 s): records published on schedule.
 
 **Missed-schedule catch-up** *(Resolves EC-13, observability half)*: the startup catch-up scan logs one `warn` line per late publication with `scheduled_at`, `published_at`, and the delay — downtime-induced lateness is visible and alertable, never silent. `09-deployment.md` owns the startup-ordering half.
