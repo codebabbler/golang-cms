@@ -601,4 +601,40 @@ Resolve those two through the project's own brainstorm→spec gate, land the two
 
 ---
 
-*End of Round-2 review. Findings AR2-1…AR2-27; disposition tracking should follow the same table convention as Round 1's Resolution Status.*
+*End of Round-2 review. Findings AR2-1…AR2-27; disposition tracking follows in the Resolution Status table below.*
+
+## Resolution Status (2026-07-11)
+
+Every finding is dispositioned against `docs/superpowers/specs/2026-07-11-round2-review-remediation-design.md` (owner-approved, D2-1…D2-8); all named edits are committed in `docs/`.
+
+| AR2 # | Sev | Finding | Disposition |
+|---|---|---|---|
+| AR2-1 | Blocker | Public write path had no content lifecycle; authors couldn't read their own creates; nothing public could publish. | Resolved by D2-1: `createStatus` grant key (12 §1/§3/§4) + owner-draft visibility (BR-API-2 amended; 02 invariant 3; 07 Public-API-create bullet); 12 §2 comments example updated. |
+| AR2-2 | Blocker | No CORS design for `/api/v1`. | Resolved by D2-2: new BR-API-6; 04 §CORS; 05 §6 admin-surface line; no `Vary: Origin` needed (constant ACAO). |
+| AR2-3 | High | Session-scoped instance lock: silent split-brain on connection loss; ghost-lock crash-loop on restart. | Resolved by D2-3: BR-RUNTIME-8 amended (dedicated connection, exit-on-loss watchdog, 120 s startup retry); 09 step 3 + keepalive runbook. |
+| AR2-4 | High | Row-driven orphan sweep could never find the object orphaned by the row-first delete order — backstop claim false. | Resolved by D2-4: new BR-MEDIA-5 + `cms_media_deletions` outbox; 07 §Media Deletion rewritten; BR-MEDIA-2 wording reconciled; retention duty 8. |
+| AR2-5 | High | Argon2id 64 MiB × unbounded concurrency = OOM vector. | Resolved by D2-5: BR-AUTH-3 amended — `min(4, NumCPU)` semaphore, 2 s wait, 429. |
+| AR2-6 | High | `contains` (infix ILIKE) defeated the indexed-only public-filter rule. | Resolved by D2-6: BR-API-4 amended (public operator set excludes `contains`); pg_trgm V2 path in 03/11. |
+| AR2-7 | Medium | Open registration with no kill-switch; no end-user admin surface. | Resolved: new BR-AUTH-14, `CMS_END_USER_REGISTRATION` (default disabled), `disabled_at`, `/api/admin/end-users`, F-34, UAC-1.7. |
+| AR2-8 | Medium | Round-1 AR-15 (bounded limiter maps) claimed resolved but never landed. | Resolved: BR-RUNTIME-4 amended — bounded LRU, fixed entry cap. |
+| AR2-9 | Medium | Idempotency semantics missing at the failure edges. | Resolved: 04 §Idempotent Creates completeness paragraph (same-txn insert, blocking concurrency, `request_hash`/422, 200-replay-current, 404-if-purged, 201-first); 07 `request_hash` column. |
+| AR2-10 | Medium | No DDL `lock_timeout`; pool coupling unpriced. | Resolved: 03 lock_timeout paragraph; 09 constants rows (`lock_timeout` 5 s, pool max 10). |
+| AR2-11 | Medium | Index naming/63-byte truncation unspecified; rename left stale names. | Resolved: 03 + 07 — `ix_<table>_<field>`, join-table truncation rule, renames rename dependent indexes. |
+| AR2-12 | Medium | 03 (NUMERIC(p,s) matrix) vs 07 (bare NUMERIC) disagreement. | Resolved: 07 mapping (declared → `NUMERIC(p,s)`, else bare); 03 matrix rows (declared→bare Yes, bare→declared No). |
+| AR2-13 | Medium | No anonymous read limit; `count=exact` open to anonymous. | Resolved: new BR-API-7 (300/min/IP; `count=exact` authenticated-only); 04/05 references. |
+| AR2-14 | Medium | DB↔bucket point-in-time inconsistency after PITR unaddressed. | Resolved: 09 cross-store bullet + restore-drill spot-check. |
+| AR2-15 | Low | Setup/recovery tokens invisible at `CMS_LOG_LEVEL=error`. | Resolved: 05/08/CLAUDE.md — emitted regardless of `CMS_LOG_LEVEL`. |
+| AR2-16 | Low | BR-AUTH-2 column list omitted `csrf_hash`. | Resolved: BR-AUTH-2 amended. |
+| AR2-17 | Low | 01 sketch omitted `Recover`. | Resolved: sketch updated to match 04's normative order. |
+| AR2-18 | Low | BR-RUNTIME-3 omitted the instance-lock step. | Resolved: BR-RUNTIME-3 amended. |
+| AR2-19 | Low | V2 publisher tick untagged in 09's V1 startup list. | Resolved: step 7 tagged (V2); 01 mirror-tagged. |
+| AR2-20 | Low | Cookie `Max-Age=7d` vs 30-day absolute — sliding unstated. | Resolved: BR-AUTH-5 amended (24 h re-issue, 30-day cap); 05 §1. |
+| AR2-21 | Low | No master-secret rotation runbook. | Resolved: 09 runbook — rotation = loss procedure, no dual-secret machinery. |
+| AR2-22 | Low | CSP lacked `frame-ancestors`; no nosniff/Referrer-Policy. | Resolved: 06 Security Posture amended. |
+| AR2-23 | Low | Advisory key values and sole-tenant keyspace assumption unstated. | Resolved: 09 — fixed constants `0x636D7300/01/02`, dedicated-database assumption. |
+| AR2-24 | Low | No cap on collection count. | Resolved: 03 — 500 collections, 422 beyond. |
+| AR2-25 | Low | `in` encoding and `contains`-on-non-text unspecified. | Resolved: 04 filtering grammar — comma-separated `in`; non-text `contains` → 422. |
+| AR2-26 | Low | OpenAPI register returned 200; replay status unspecified. | Resolved: register → 201; replay semantics in the Idempotency-Key description. |
+| AR2-27 | Low | ETag/304 semantics absent; edge `Vary`/`no-store` honoring unverifiable. | Resolved: BR-API-5 amended (If-None-Match → 304, strong body hash); 09 cache-contract smoke check runbook. |
+
+All blocker- and High-class items are resolved in the committed documentation set as of 2026-07-11.

@@ -14,7 +14,7 @@ This document specifies the HTTP surface: routes, the normative middleware order
 | `/api/admin/collections/{slug}/records` | session | Full CRUD, trash view, restore, purge, revisions, publish/unpublish. |
 | `/api/admin/media` | session | `presign`, `finalize`, listing, delete (BR-MEDIA-5). |
 | `/api/admin/end-users` | session | End-user management: list, disable/enable, revoke refresh families (BR-AUTH-14). |
-| `/api/v1/auth/*` | none → JWT | End-user `register` (env-gated, BR-AUTH-14), `login`, `refresh`, `logout`, `password-reset/request`, `password-reset/confirm` (F-11, BR-AUTH-13). |
+| `/api/v1/auth/*` | none → JWT | End-user `register` (gated by `CMS_END_USER_REGISTRATION`, BR-AUTH-14), `login`, `refresh`, `logout`, `password-reset/request`, `password-reset/confirm` (F-11, BR-AUTH-13). |
 | `/api/v1/collections/{slug}/records` | API key or JWT or anonymous | Published-scope reads; writes per API-key scope or end-user access rules. |
 | `/recover` | none | Active only while recovery mode is enabled (BR-AUTH-12); 404 otherwise. Consumes the single-use super-admin recovery token, resets the target user's password, and revokes their sessions. |
 | `/healthz` | none | Liveness (`09-deployment.md`). |

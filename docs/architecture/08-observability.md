@@ -37,7 +37,7 @@ V1 sink — a distinguished `slog` line:
 
 Both tickers log start/finish with counts and durations. Tickers wrap each tick in panic recovery: a panicking job logs at `error` and skips to the next tick.
 
-- `jobs.Retention` (hourly): expired sessions purged, used or expired reset tokens purged, rotated or revoked refresh tokens > 30 days purged, trashed rows purged, purges skipped on FK RESTRICT (each skip names the blocking reference), revisions pruned, idempotency rows > 24 h purged, media orphans swept, media deletion-queue entries older than 1 h retried (BR-MEDIA-5).
+- `jobs.Retention` (hourly): expired sessions purged, used or expired reset tokens purged, rotated or revoked refresh tokens > 30 days purged, trashed rows purged, purges skipped on FK RESTRICT (each skip names the blocking reference), revisions pruned, idempotency rows > 24 h purged, media orphans swept, `cms_media_deletions` entries older than 1 h retried (BR-MEDIA-5).
 - `jobs.Publisher` (V2, every 30 s): records published on schedule.
 
 **Missed-schedule catch-up** *(Resolves EC-13, observability half)*: the startup catch-up scan logs one `warn` line per late publication with `scheduled_at`, `published_at`, and the delay — downtime-induced lateness is visible and alertable, never silent. `09-deployment.md` owns the startup-ordering half.
