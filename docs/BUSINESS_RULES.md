@@ -1,6 +1,6 @@
 # golang-cms — Business Rules
 
-**Version:** 1.2 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
+**Version:** 1.3 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
 
 This manual defines the non-negotiable invariants of golang-cms. Every rule states the invariant first, then the exact enforcement point in code. Implementation, review, and tests must trace to these identifiers (see Rule-to-Code Traceability). Rules tagged **(V2)** or **(V3)** bind from that version onward; untagged rules bind from V1. Rules tagged **[structural]** hold by construction (the enforcing code path is the only path that exists) and are exempt from the test-name trace.
 
@@ -121,8 +121,10 @@ This manual defines the non-negotiable invariants of golang-cms. Every rule stat
   *Enforcement:* `media.Service.Finalize` + `content.Document.Set` reference validation.
 - **BR-MEDIA-4.** The binary never processes pixels; transformation is Cloudflare Image Resizing's job. **[structural]**
   *Enforcement:* dependency policy (BR-RUNTIME-2) — no imaging library exists in `go.mod`.
-- **BR-MEDIA-5.** Media deletion runs one transaction that deletes the `cms_media` row — FK RESTRICT produces the `409` while any record references it — and inserts the `object_key` into `cms_media_deletions`; the storage object is deleted after commit and the queue row cleared on success. `jobs.Retention` retries queue entries older than one hour, so a crash between commit and object deletion never strands an object.
+- **BR-MEDIA-5.** Media deletion runs one transaction that deletes the `cms_media` row — FK RESTRICT produces the `409` while any record references it — and inserts the `object_key` into `cms_media_deletions`; the storage object is deleted after commit and the queue row cleared on success. `jobs.Retention` retries queue entries older than one hour, so a crash between commit and object deletion never strands an object. A retry that finds the object already gone (404) treats the deletion as complete and clears the queue row.
   *Enforcement:* `media.Service.Delete` + `jobs.Retention`.
+- **BR-MEDIA-6.** The media subsystem is optional: when the four `S3_*` variables are entirely absent at startup, the binary boots in media-less mode — media routes (presign, finalize, delete) return `503` with code `unavailable` and everything else works. Partial configuration of the `S3_*` group fails startup listing the missing variables — half-configured storage is a mistake, not a mode. The `R2_*` variables remain conditional within media-enabled mode (`R2_ACCOUNT_ID` when using R2; `R2_PUBLIC_BUCKET_URL` for public delivery). Only `DATABASE_URL` and `CMS_MASTER_SECRET` are hard-required at startup.
+  *Enforcement:* startup config validation + media handler gate.
 
 ## 7. API Conduct
 
@@ -136,7 +138,7 @@ This manual defines the non-negotiable invariants of golang-cms. Every rule stat
   *Enforcement:* `query.Builder` scope-aware field and operator validation.
 - **BR-API-5.** Anonymous public reads carry `Cache-Control: public, s-maxage=60, stale-while-revalidate=60` and a strong `ETag`; any request bearing `Authorization` or a cookie receives `Cache-Control: no-store` without exception. A conditional GET presenting a matching `If-None-Match` returns `304 Not Modified`; the ETag is a strong hash of the response body.
   *Enforcement:* `httpapi` response headers on public routes.
-- **BR-API-6.** Every `/api/v1` response carries `Access-Control-Allow-Origin: *`. Preflight `OPTIONS` requests are handled before authentication and rate limiting and answered with `Access-Control-Allow-Headers: Authorization, Content-Type, Idempotency-Key`, `Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS`, and `Access-Control-Max-Age: 86400`; non-preflight responses expose `X-Request-ID` and `ETag` via `Access-Control-Expose-Headers`. `/api/admin/*` and the SPA emit no CORS headers — the admin surface is same-origin only (cookie + CSRF). The wildcard is safe because bearer tokens are not ambient credentials: CORS never causes a browser to attach a victim's JWT, and cookies are never accepted on `/api/v1`.
+- **BR-API-6.** Every `/api/v1` response carries `Access-Control-Allow-Origin: *`. Preflight `OPTIONS` requests are handled before authentication and rate limiting — exempt because they carry no body, touch no database, and are edge-cacheable for 24 hours via `Access-Control-Max-Age` — and answered with `Access-Control-Allow-Headers: Authorization, Content-Type, Idempotency-Key`, `Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS`, and `Access-Control-Max-Age: 86400`; non-preflight responses expose `X-Request-ID` and `ETag` via `Access-Control-Expose-Headers`. `/api/admin/*` and the SPA emit no CORS headers — the admin surface is same-origin only (cookie + CSRF). The wildcard is safe because bearer tokens are not ambient credentials: CORS never causes a browser to attach a victim's JWT, and cookies are never accepted on `/api/v1`.
   *Enforcement:* `middleware.CORS` mounted on the `/api/v1` subtree only.
 - **BR-API-7.** Anonymous public reads rate-limit at 300 requests per minute per client IP (`429 rate_limited` beyond). `?count=exact` requires an authenticated principal; anonymous use returns `422 validation_failed` naming the parameter.
   *Enforcement:* `middleware.RateLimit` anonymous-read bucket + `httpapi.ParsePagination`.
@@ -171,6 +173,8 @@ This manual defines the non-negotiable invariants of golang-cms. Every rule stat
 | `CMS_LOG_LEVEL` | `info` | `slog` level (debug, info, warn, error). |
 | `CMS_TRASH_RETENTION_DAYS` | `30` | Days a trashed record persists before auto-purge. |
 | `CMS_REVISION_LIMIT` | `50` | Maximum revisions retained per record. |
+
+Hard-required: `DATABASE_URL`, `CMS_MASTER_SECRET`. The `S3_*` group is optional as a unit (BR-MEDIA-6), with the `R2_*` variables conditional within media-enabled mode; every remaining variable carries a default or is optional.
 
 ## Edge-Case Coverage (Batch 1)
 
