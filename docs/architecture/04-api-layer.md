@@ -15,7 +15,7 @@ This document specifies the HTTP surface: routes, the normative middleware order
 | `/api/admin/media` | session | `presign`, `finalize`, listing. |
 | `/api/v1/auth/*` | none → JWT | End-user `register`, `login`, `refresh`, `logout`, `password-reset/request`, `password-reset/confirm` (F-11, BR-AUTH-13). |
 | `/api/v1/collections/{slug}/records` | API key or JWT or anonymous | Published-scope reads; writes per API-key scope or end-user access rules. |
-| `/recover` | none → active only in recovery mode | Consumes the single-use super-admin recovery token, resets the target user's password, and revokes their sessions (BR-AUTH-12); returns `404` when recovery mode is not active. |
+| `/recover` | none | Active only while recovery mode is enabled (BR-AUTH-12); 404 otherwise. Consumes the single-use super-admin recovery token, resets the target user's password, and revokes their sessions. |
 | `/healthz` | none | Liveness (`09-deployment.md`). |
 | `/readyz` | none | Readiness — database ping; see `08-observability.md`, `09-deployment.md`. |
 | `/*` | none | Embedded SPA — hashed assets immutable, `index.html` no-cache. |
@@ -35,7 +35,7 @@ The order is a business-rule surface: rate limiting precedes authentication so c
 
 ## Response Envelope
 
-Success:
+Success (pagination `total` shown because the request carried `?count=exact`):
 
 ```json
 { "data": ..., "meta": { "pagination": { "limit": 25, "offset": 0, "total": 1042 } } }
@@ -72,11 +72,11 @@ Request-body caps producing `payload_too_large`: **5 MiB** on record-write route
 
 ## Filtering and Sorting (BR-API-4)
 
-`?filter[<field>][<op>]=<value>` with `op ∈ eq, neq, lt, lte, gt, gte, in, contains`; `?sort=<field>` / `?sort=-<field>`. Fields must exist in the schema snapshot and survive `Decision.FieldRules` visibility. `ScopePublic` queries additionally accept `filter`/`sort` only on fields marked `indexed` or `unique`; a request naming any other field returns `422 validation_failed` naming the offending field. `ScopeAdmin` and `ScopeTrash` accept any schema field, still subject to `Decision.FieldRules` visibility and the query's `statement_timeout`. All composition happens inside `query.Builder` — operators are a closed set, and `contains` maps to `ILIKE` with escaped wildcards on `text` fields only.
+`?filter[<field>][<op>]=<value>` with `op ∈ eq, neq, lt, lte, gt, gte, in, contains`; `?sort=<field>` / `?sort=-<field>`. Fields must exist in the schema snapshot and survive `Decision.FieldRules` visibility; violations return `422` naming the field. `ScopePublic` queries additionally accept `filter`/`sort` only on fields marked `indexed` or `unique`; a request naming any other field returns `422 validation_failed` naming the offending field. `ScopeAdmin` and `ScopeTrash` accept any schema field, still subject to `Decision.FieldRules` visibility and the query's `statement_timeout`. All composition happens inside `query.Builder` — operators are a closed set, and `contains` maps to `ILIKE` with escaped wildcards on `text` fields only.
 
 ## Caching (BR-API-5)
 
-Anonymous `ScopePublic` GETs carry `Cache-Control: public, s-maxage=60, stale-while-revalidate=60` and a strong `ETag`. Any request bearing `Authorization` or a cookie receives `Cache-Control: no-store` — without exception; a cacheable credentialed response is a security bug, not a performance optimization. Both cases add `Vary: Authorization` so shared caches never conflate anonymous and credentialed results. V1 has no purge-on-publish signal, so a published change may take up to 60 seconds to reach an edge cache — an accepted propagation window, documented here rather than engineered away. V2 adds purge-on-publish webhooks, at which point cache TTLs can lengthen.
+Anonymous `ScopePublic` GETs carry `Cache-Control: public, s-maxage=60, stale-while-revalidate=60` and a strong `ETag`. Any request bearing `Authorization` or a cookie receives `Cache-Control: no-store` — without exception; a cacheable credentialed response is a security bug, not a performance optimization. Both cases add `Vary: Authorization, Cookie` so shared caches never conflate anonymous and credentialed results. V1 has no purge-on-publish signal, so a published change may take up to 60 seconds to reach an edge cache — an accepted propagation window, documented here rather than engineered away. V2 adds purge-on-publish webhooks, at which point cache TTLs can lengthen.
 
 ## Idempotent Creates
 
