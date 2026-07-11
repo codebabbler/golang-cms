@@ -1,0 +1,385 @@
+openapi: 3.1.0
+info:
+  title: golang-cms public API
+  version: 1.0.0
+  description: >-
+    Machine-readable skeleton of the public v1 surface. Normative behavior
+    (route map, envelope, error registry, pagination, filtering, caching,
+    idempotency) lives in docs/architecture/04-api-layer.md; this document
+    is a schema/route skeleton derived from it, not a replacement for it.
+servers:
+  - url: /api/v1
+security:
+  - apiKey: []
+  - jwt: []
+paths:
+  /collections/{slug}/records:
+    description: Normative behavior in docs/architecture/04-api-layer.md
+    parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Collection slug.
+    get:
+      summary: List records in a collection under the caller's scope.
+      description: Normative behavior in docs/architecture/04-api-layer.md
+      operationId: listCollectionRecords
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 25
+            maximum: 100
+          description: Page size; defaults to 25, clamps to 100.
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+          description: >-
+            Capped offset pagination; values beyond 10000 return
+            422 validation_failed. Mutually exclusive with cursor.
+        - name: cursor
+          in: query
+          schema:
+            type: string
+          description: Opaque keyset cursor; mutually exclusive with offset.
+        - name: count
+          in: query
+          schema:
+            type: string
+            enum:
+              - exact
+          description: Set to exact to populate meta.pagination.total.
+        - name: filter
+          in: query
+          style: deepObject
+          explode: true
+          schema:
+            type: object
+          description: >-
+            filter[<field>][<op>]=<value>, where op is one of eq, neq, lt,
+            lte, gt, gte, in, contains.
+        - name: sort
+          in: query
+          schema:
+            type: string
+          description: Field name; prefix with - for descending order.
+        - name: expand
+          in: query
+          schema:
+            type: string
+          description: Relation field to expand one level deep.
+      responses:
+        '200':
+          description: Paginated list of records.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Envelope'
+        default:
+          description: Error response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      summary: Create a record in a collection.
+      description: Normative behavior in docs/architecture/04-api-layer.md
+      operationId: createCollectionRecord
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema:
+            type: string
+            maxLength: 128
+          description: >-
+            Optional idempotency key; a replay from the same principal within
+            24 hours returns the original creation result.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '201':
+          description: Created record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Envelope'
+        default:
+          description: Error response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /collections/{slug}/records/{id}:
+    description: Normative behavior in docs/architecture/04-api-layer.md
+    parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Collection slug.
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: Record ID.
+    get:
+      summary: Fetch a single record under the caller's scope.
+      description: Normative behavior in docs/architecture/04-api-layer.md
+      operationId: getCollectionRecord
+      parameters:
+        - name: expand
+          in: query
+          schema:
+            type: string
+          description: Relation field to expand one level deep.
+      responses:
+        '200':
+          description: The record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Envelope'
+        default:
+          description: Error response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /auth/register:
+    description: Normative behavior in docs/architecture/04-api-layer.md
+    post:
+      summary: Register a new end-user account.
+      description: Normative behavior in docs/architecture/04-api-layer.md
+      operationId: authRegister
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Registration result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Envelope'
+        default:
+          description: Error response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /auth/login:
+    description: Normative behavior in docs/architecture/04-api-layer.md
+    post:
+      summary: Log in an end-user and issue JWTs.
+      description: Normative behavior in docs/architecture/04-api-layer.md
+      operationId: authLogin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Login result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Envelope'
+        default:
+          description: Error response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /auth/refresh:
+    description: Normative behavior in docs/architecture/04-api-layer.md
+    post:
+      summary: Refresh an end-user JWT using a refresh token.
+      description: Normative behavior in docs/architecture/04-api-layer.md
+      operationId: authRefresh
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Refreshed tokens.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Envelope'
+        default:
+          description: Error response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /auth/logout:
+    description: Normative behavior in docs/architecture/04-api-layer.md
+    post:
+      summary: Log out an end-user and revoke the refresh token family.
+      description: Normative behavior in docs/architecture/04-api-layer.md
+      operationId: authLogout
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Logout result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Envelope'
+        default:
+          description: Error response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /auth/password-reset/request:
+    description: Normative behavior in docs/architecture/04-api-layer.md
+    post:
+      summary: Request a password reset token for an end-user account.
+      description: Normative behavior in docs/architecture/04-api-layer.md
+      operationId: authPasswordResetRequest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Password reset request accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Envelope'
+        default:
+          description: Error response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /auth/password-reset/confirm:
+    description: Normative behavior in docs/architecture/04-api-layer.md
+    post:
+      summary: Confirm a password reset with a token and new password.
+      description: Normative behavior in docs/architecture/04-api-layer.md
+      operationId: authPasswordResetConfirm
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Password reset confirmed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Envelope'
+        default:
+          description: Error response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+components:
+  securitySchemes:
+    apiKey:
+      type: http
+      scheme: bearer
+      description: >-
+        Machine-principal API key, presented as a bearer credential. Tokens
+        are prefixed cms_ (see docs/architecture/05-auth-security.md).
+    jwt:
+      type: http
+      scheme: bearer
+      description: >-
+        End-user JWT access token issued by /auth/login or /auth/refresh,
+        presented as a bearer credential.
+  schemas:
+    Envelope:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          description: Response payload; shape depends on the endpoint.
+        meta:
+          type: object
+          properties:
+            pagination:
+              type: object
+              required:
+                - limit
+                - offset
+              properties:
+                limit:
+                  type: integer
+                  description: Effective page size (default 25, clamp 100).
+                offset:
+                  type: integer
+                  description: Effective offset.
+                total:
+                  type: integer
+                  description: >-
+                    Optional. Present only when the request included
+                    ?count=exact.
+                next_cursor:
+                  type: string
+                  description: >-
+                    Optional. Present only when keyset cursor pagination
+                    applies and a further page exists.
+    Error:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              enum:
+                - validation_failed
+                - unauthorized
+                - forbidden
+                - not_found
+                - conflict
+                - rate_limited
+                - payload_too_large
+                - internal
+            message:
+              type: string
+            details:
+              description: >-
+                Optional structured detail list; shape varies by code
+                (e.g. field errors for validation_failed).
