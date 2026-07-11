@@ -1,6 +1,6 @@
 # 09 — Deployment
 
-**Version:** 1.2 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
+**Version:** 1.3 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
 
 The deliverable is one statically linked binary embedding the admin UI and the system-table migrations (N-1), targeting linux/amd64 and linux/arm64 (N-2). Deployment is the binary, the environment variables, PostgreSQL 16+, and an S3-compatible bucket — nothing else exists to operate (BR-RUNTIME-2).
 
@@ -10,7 +10,7 @@ The deliverable is one statically linked binary embedding the admin UI and the s
 
 ## Configuration
 
-All configuration enters through the environment variables of `../BUSINESS_RULES.md` § Naming Constants — the seventeen-variable table is exhaustive. The binary validates required variables at startup and exits non-zero listing every missing one at once, not the first.
+All configuration enters through the environment variables of `../BUSINESS_RULES.md` § Naming Constants — the seventeen-variable table is exhaustive. The binary validates required variables at startup and exits non-zero listing every missing one at once, not the first. Required at startup: `DATABASE_URL` and `CMS_MASTER_SECRET`; the `S3_*` group is optional as a unit (media-less mode, BR-MEDIA-6) — partial configuration of the group fails startup.
 
 ## Startup (BR-RUNTIME-3)
 
@@ -24,13 +24,13 @@ All configuration enters through the environment variables of `../BUSINESS_RULES
 
 Migration failure, instance-lock failure (BR-RUNTIME-8), key-load failure (BR-AUTH-10), or schema-cache failure aborts startup with a non-zero exit — the system fails closed (N-11) rather than serving with partial state.
 
-The three advisory-lock keys are fixed constants: migration `0x636D7300`, schema `0x636D7301`, instance `0x636D7302`. golang-cms assumes it is the only user of its database's advisory-lock keyspace — deploy it into a dedicated database.
+The three advisory-lock keys are fixed constants: migration `0x636D7300`, schema `0x636D7301`, instance `0x636D7302`. golang-cms must be the only user of its database and its advisory-lock keyspace — a dedicated database is a hard deployment requirement.
 
 ## Shutdown (EC-14)
 
 On SIGTERM/SIGINT the binary: (1) flips `/readyz` and `/healthz` to 503 so the proxy stops routing new work — proxies watch `/readyz`, supervisors watch `/healthz` (`08-observability.md`), (2) stops the job tickers, (3) drains in-flight requests via `http.Server.Shutdown` with the 15-second window (BR-RUNTIME-6), (4) exits 0. Requests accepted before the signal and completing within the window are never dropped; requests arriving after it receive the proxy's upstream error, not a dropped connection. A drain exceeding 15 seconds forcibly closes the stragglers — logged and counted (BR-RUNTIME-6) — and exits 1, visible in logs and exit status. *(Resolves EC-14.)*
 
-**Upgrade procedure:** single tenant, single process — stop, replace binary, start. The window is bounded by the drain plus startup (≤ 2 s when migrations are current, N-5). Zero-downtime orchestration is deliberately out of architectural scope; the health endpoints make any supervisor (systemd `Restart=always` with `TimeoutStopSec=20`, or a container runtime honoring SIGTERM) sufficient. This single-instance posture is deliberate (BR-RUNTIME-8): every upgrade, and every unplanned crash-restart, costs a drain-plus-startup gap rather than failing over to a peer. Target availability class is **~99.5%**; high availability is explicitly out of scope (N-13).
+**Upgrade procedure:** single tenant, single process — stop, replace binary, start. The window is bounded by the drain plus startup (≤ 2 s when migrations are current, N-5). Zero-downtime orchestration is deliberately out of architectural scope; a restart-on-exit supervisor is required — the BR-RUNTIME-8 watchdog exits deliberately and relies on it. The reference is systemd `Restart=always` with `TimeoutStopSec=20`; any container runtime honoring SIGTERM and restarting on exit is equally supported. This single-instance posture is deliberate (BR-RUNTIME-8): every upgrade, and every unplanned crash-restart, costs a drain-plus-startup gap rather than failing over to a peer. Target availability class is **~99.5%**; high availability is explicitly out of scope (N-13).
 
 ## Timeouts
 
@@ -47,6 +47,8 @@ On SIGTERM/SIGINT the binary: (1) flips `/readyz` and `/healthz` to 503 so the p
 | Postgres `statement_timeout` — schema transactions | 60 s |
 | Postgres `lock_timeout` — schema transactions | 5 s |
 | pgx pool max connections | 10 |
+| Idempotency duplicate-wait bound | 5 s |
+| S3 client per-call timeout (presign signing, HEAD, object delete) | 10 s |
 | Request body cap — record-write routes (`.../records` create/update) | 5 MiB |
 | Request body cap — all other routes (auth, presign, finalize, etc.) | 64 KiB |
 
@@ -60,6 +62,8 @@ The binary expects an edge proxy (Cloudflare or equivalent) in front of it. The 
 2. **The proxy appends to `X-Forwarded-For`** — never forwards the client-supplied header untouched. List your edge's egress ranges in `CMS_TRUSTED_PROXY_CIDRS` (comma-separated CIDRs — e.g., Cloudflare's published IP ranges, refreshed occasionally as Cloudflare updates them); an empty value falls back to the built-in loopback/RFC1918 heuristic only. An unlisted proxy is not trusted by omission: the rate limiter degrades to per-proxy-IP limiting rather than failing open. The rate limiter's deterministic trust rule depends on this (`05-auth-security.md` §5, EC-10).
 3. **The proxy respects origin cache headers** — no cache-everything overrides — or the SPA contract below breaks.
 4. **The proxy honors origin cache headers on `/api/*` too.** Public API responses carry `Cache-Control: public, s-maxage=60, stale-while-revalidate=60` (anonymous) or `no-store` (any request bearing `Authorization` or a cookie) per BR-API-5 (`04-api-layer.md`); an edge override that ignores these headers risks caching a credentialed response for the wrong caller.
+
+The edge also owns response compression (gzip/brotli); the binary serves identity encoding only.
 
 ## SPA Cache Busting (EC-15)
 

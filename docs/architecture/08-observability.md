@@ -1,6 +1,6 @@
 # 08 — Observability
 
-**Version:** 1.2 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
+**Version:** 1.3 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
 
 Structured logs are the telemetry surface. The binary ships no metrics endpoint and no tracing dependency in V1 — adding either would breach the dependency invariant's spirit of operational minimalism (BR-RUNTIME-2); log-derived dashboards cover the single-tenant operational questions.
 
@@ -53,6 +53,16 @@ Every `schema.Engine.Apply` logs the operation, duration, and — for V2 search 
 `/readyz` (readiness): pings the database and returns 200 on success, 503 on failure. Proxies route on `/readyz`.
 
 `/healthz`, `/readyz`, `/api/v1/auth/*`, and anonymous public reads are the unauthenticated surfaces.
+
+## Alerting (N-14)
+
+The binary emits signals; wiring them to a notification channel is a deployment obligation. The closed V1 alert list:
+
+- Instance-lock-loss exit (BR-RUNTIME-8) — the process logged a lock-loss reason and exited.
+- Drain force-close count > 0 on shutdown (BR-RUNTIME-6).
+- A retention FK-RESTRICT skip naming the same record persisting beyond 7 days (BR-LIFE-8).
+- `/readyz` flapping, observed by the external availability probe (N-14).
+- (V2) Late scheduled publishes (BR-LIFE-9).
 
 ## Edge-Case Coverage (this document)
 
