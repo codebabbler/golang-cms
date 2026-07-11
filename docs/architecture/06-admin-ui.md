@@ -1,6 +1,6 @@
 # 06 — Admin UI
 
-**Version:** 1.0 · **Last Updated:** 2026-07-08 · **Owner:** Miraj Aryal
+**Version:** 1.1 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
 
 The admin UI is a Svelte 5 + Vite SPA compiled to static assets and embedded into the binary via `go:embed` (O-5: no SvelteKit — the UI stays Vite-only and embeddable). It is a pure client of the `/api/admin/*` surface; it holds no privileged logic, because every rule it reflects is server-enforced.
 
@@ -22,13 +22,14 @@ The admin UI is a Svelte 5 + Vite SPA compiled to static assets and embedded int
 | Screen | Behavior |
 |---|---|
 | Schema builder | Collection and field CRUD over the operations of `03-dynamic-schema.md`. Destructive actions demand typed-slug confirmation client-side *and* server-side (BR-SCHEMA-7); type-change pickers offer only safe-matrix targets and explain rejections (EC-3). Rename dialogs state the API-path consequence (EC-4). |
-| Content editor | Field widgets per type; Tiptap for `richText`, exchanging canonical JSONB with the API — the editor never produces HTML for storage. Field-level `validation_failed` details render inline at the offending widgets. |
+| Content editor | Field widgets per type; Tiptap for `richText`, exchanging canonical JSONB with the API — the editor never produces HTML for storage. Field-level `validation_failed` details render inline at the offending widgets. Lists request `?count=exact` where totals are displayed; cursor-aware next/prev navigation handles records beyond the 10,000-record offset ceiling (04-api-layer.md). |
 | Revisions | Lists revisions per record, renders side-by-side compare of any two snapshots, restores through the drift-mapping flow with a preview of dropped/defaulted fields (EC-5, `03-dynamic-schema.md`). |
-| Trash | Trash-scope listing, restore, and purge (purge is destructive → re-auth). Restore collisions surface the `409` field detail with a link to the colliding record (BR-LIFE-5). |
+| Trash | Trash-scope listing, restore, and purge (purge is destructive → re-auth). Restore collisions surface the `409` field detail with a link to the colliding record (BR-LIFE-5). Restoring a published record displays a warning that it will become publicly visible immediately. |
 | Media library | Runs the presign → direct PUT → finalize flow of `04-api-layer.md` with client-side progress; abandoned uploads need no cleanup action — the orphan sweep owns them (EC-9). |
-| Users & API keys | Role management within persona limits (P-2 cannot touch super admins); key creation shows the plaintext exactly once with a copy affordance (BR-AUTH-7). |
-| Access rules | Per-collection rule editor for read/create/update/delete, predicates, and field-level visibility; renders the effective `Decision` per role as a preview matrix. |
+| Users & API keys | Role management within persona limits (P-2 cannot touch super admins); key creation shows the plaintext exactly once with a copy affordance (BR-AUTH-7). Admins can issue one-time password-reset tokens to users (BR-AUTH-13); the token is displayed exactly once. API keys include a `passwordReset` capability toggle for fine-grained access control. |
+| Access rules | Per-collection grant-matrix editor defining rules for read/create/update/delete per role (minRole, minRoleOwn, endUsers, anonymous per action, per `12-access-rules.md`); renders the effective `Decision` per role as an interactive preview matrix. |
 | Setup (`/setup`) | Shown only on fresh systems (`cms_users` empty): accepts the logged single-use setup token and creates the first super admin (BR-AUTH-11). Returns 404 whenever `cms_users` is non-empty. |
+| Recovery (`/recover`) | Shown only when recovery mode is active (BR-AUTH-12); accepts the logged single-use recovery token and restores admin access. Returns 404 otherwise. |
 
 ## Editorial State Model
 
@@ -38,6 +39,6 @@ The admin UI is a Svelte 5 + Vite SPA compiled to static assets and embedded int
 
 ## Security Posture
 
-- Strict CSP: `default-src 'self'`; no inline scripts; Tiptap and all vendor code bundle at build time — the threat-model XSS mitigation depends on this header (`05-auth-security.md` §6).
+- Strict CSP: `default-src 'self'; img-src 'self' <media domain>; media-src 'self' <media domain>`; no inline scripts. The media domain is configured via the `R2_PUBLIC_BUCKET_URL` environment variable and enforces origin isolation (`09-deployment.md` §Origin Isolation). Tiptap and all vendor code bundle at build time — the threat-model XSS mitigation depends on this header (`05-auth-security.md` §6).
 - The SPA renders rich text from JSONB through Tiptap's schema-constrained renderer, never `innerHTML` of stored strings.
 - Session cookie handling is entirely browser-managed (`HttpOnly`); the SPA never reads or writes it.
