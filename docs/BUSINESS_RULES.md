@@ -1,6 +1,6 @@
 # golang-cms — Business Rules
 
-**Version:** 1.1 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
+**Version:** 1.2 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
 
 This manual defines the non-negotiable invariants of golang-cms. Every rule states the invariant first, then the exact enforcement point in code. Implementation, review, and tests must trace to these identifiers (see Rule-to-Code Traceability). Rules tagged **(V2)** or **(V3)** bind from that version onward; untagged rules bind from V1. Rules tagged **[structural]** hold by construction (the enforcing code path is the only path that exists) and are exempt from the test-name trace.
 
@@ -10,18 +10,18 @@ This manual defines the non-negotiable invariants of golang-cms. Every rule stat
   *Enforcement:* `httpapi` route registration — no tenant segment exists in any route.
 - **BR-RUNTIME-2.** PostgreSQL 16+ and S3-compatible object storage are the only runtime dependencies. The binary never connects to Redis, message queues, or external caches. **[structural]**
   *Enforcement:* `main.go` dependency wiring; CI dependency review rejects new service clients.
-- **BR-RUNTIME-3.** Startup executes in strict order: embedded migrations under advisory lock → schema cache load → HTTP listener.
+- **BR-RUNTIME-3.** Startup executes in strict order: embedded migrations under advisory lock → instance lock (BR-RUNTIME-8) → schema cache load → HTTP listener.
   *Enforcement:* `app.Run` — the listener starts only after `schema.Cache.Load` returns.
-- **BR-RUNTIME-4.** Rate-limiting state lives in process memory and resets on restart.
-  *Enforcement:* `middleware.RateLimit` — in-memory token buckets keyed by email and client IP.
+- **BR-RUNTIME-4.** Rate-limiting state lives in process memory and resets on restart. Buckets are held in a bounded LRU with a fixed entry cap; eviction forgets the bucket — memory is bounded at the cap regardless of client cardinality.
+  *Enforcement:* `middleware.RateLimit` — in-memory LRU of token buckets keyed by email and client IP.
 - **BR-RUNTIME-5.** Background work (retention, scheduled publishing) runs as in-process goroutine tickers.
   *Enforcement:* `jobs.Scheduler` — the only background-execution entry point.
 - **BR-RUNTIME-6.** Shutdown drains in-flight requests within a 15-second window; requests completing within the window are never dropped; requests exceeding it are force-closed, logged, and counted.
   *Enforcement:* `app.Run` — `http.Server.Shutdown` with a 15-second context.
 - **BR-RUNTIME-7.** The in-memory schema cache reloads before the schema-change advisory lock releases; a request served after a schema change never sees stale metadata.
   *Enforcement:* `schema.Engine.Apply` — cache reload precedes lock release.
-- **BR-RUNTIME-8.** Exactly one process serves at a time: before opening the listener, the binary acquires a process-lifetime advisory lock (session-scoped, distinct from the migration and schema keys); a second process fails startup with a clear log line. *(Resolves EC-16.)*
-  *Enforcement:* `app.Run` — `pg_advisory_lock` on the instance key, held until exit.
+- **BR-RUNTIME-8.** Exactly one process serves at a time: before opening the listener, the binary acquires a process-lifetime advisory lock (session-scoped, held on a dedicated connection with TCP keepalives, distinct from the migration and schema keys). Startup retries acquisition with backoff for up to 120 seconds — riding out a crashed predecessor's lingering session — then fails with a clear log line. If the lock connection drops at any point after acquisition, the process exits non-zero: serving without the lock is never permitted (fail closed, N-11). *(Resolves EC-16.)*
+  *Enforcement:* `app.Run` — `pg_advisory_lock` on the instance key, dedicated connection, watchdog on connection loss.
 
 ## 2. Schema Engine
 
@@ -46,7 +46,7 @@ This manual defines the non-negotiable invariants of golang-cms. Every rule stat
 
 - **BR-LIFE-1.** Every record write appends a revision with a monotonic `version_no` in the same transaction as the live-row write. History is append-only; no code path updates or deletes a revision row except retention pruning.
   *Enforcement:* `lifecycle.Service.Save` — revision insert and live-row write share one transaction.
-- **BR-LIFE-2.** The live row holds the current published content for published records; drafts newer than the published version exist only in `cms_revisions`. Publishing copies the revision's data into the live row.
+- **BR-LIFE-2.** The live row holds the current published content for published records; drafts newer than the published version exist only in `cms_revisions`. Publishing copies the revision's data into the live row. Records created with `createStatus: "published"` (`docs/architecture/12-access-rules.md`) start published: the create transaction writes the live row as published and marks the first revision published.
   *Enforcement:* `lifecycle.Service.Publish`.
 - **BR-LIFE-3.** Publishing and unpublishing require role `editor` or above.
   *Enforcement:* `access.Evaluator.Decide` — `publish` action check in the lifecycle handler.
@@ -67,13 +67,13 @@ This manual defines the non-negotiable invariants of golang-cms. Every rule stat
 
 - **BR-AUTH-1.** Admin login sets `cms_session=<256-bit-random>; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=604800` and returns `csrfToken` in the body.
   *Enforcement:* `auth.SessionService.Issue`.
-- **BR-AUTH-2.** The database stores only hashed session tokens (`token_hash, user_id, created_at, last_seen_at, ip, user_agent`); the raw cookie value never persists.
+- **BR-AUTH-2.** The database stores only hashed session tokens (`token_hash, user_id, csrf_hash, created_at, last_seen_at, ip, user_agent`); the raw cookie value never persists.
   *Enforcement:* `auth.SessionService` — hash before insert, hash before lookup.
-- **BR-AUTH-3.** Password hashing uses Argon2id with per-hash salts.
-  *Enforcement:* `auth.Password.Hash` / `auth.Password.Verify`.
+- **BR-AUTH-3.** Password hashing uses Argon2id with per-hash salts (64 MiB memory, 3 iterations, parallelism 2). A global semaphore caps concurrent hash/verify operations at `min(4, NumCPU)`; work exceeding the cap waits up to 2 seconds, then fails with `429 rate_limited` — memory use from password hashing is bounded at ~256 MiB regardless of request volume.
+  *Enforcement:* `auth.Password.Hash` / `auth.Password.Verify` behind a package-level semaphore.
 - **BR-AUTH-4.** Every state-changing admin request carries `X-CSRF-Token` validated against the session record; requests without it fail with `403`.
   *Enforcement:* `middleware.RequireCSRF` on all admin mutation routes.
-- **BR-AUTH-5.** Sessions expire after 7 idle days and 30 absolute days. Destructive operations require re-authentication within the preceding 4 hours.
+- **BR-AUTH-5.** Sessions expire after 7 idle days and 30 absolute days. Destructive operations require re-authentication within the preceding 4 hours. The session cookie re-issues with a fresh `Max-Age` when 24 hours or more have passed since it was last set, never extending past the 30-day absolute bound.
   *Enforcement:* `middleware.RequireSession` (expiry) + `middleware.RequireRecentAuth` (destructive routes).
 - **BR-AUTH-6.** Login attempts rate-limit at 10/15 min per email and 30/15 min per IP.
   *Enforcement:* `middleware.RateLimit` on the login route.
@@ -91,6 +91,8 @@ This manual defines the non-negotiable invariants of golang-cms. Every rule stat
   *Enforcement:* `auth.Recovery` at startup + the `/recover` handler.
 - **BR-AUTH-13.** Password-reset tokens store hashed, expire in 30 minutes, and are single-use; confirmation revokes every refresh-token family of the affected user. The binary never sends email; delivery belongs to the consuming application.
   *Enforcement:* `auth.ResetService` + `cms_reset_tokens`.
+- **BR-AUTH-14.** End-user registration is enabled only when `CMS_END_USER_REGISTRATION=enabled` (default `disabled`); otherwise `POST /api/v1/auth/register` returns `404`. Admins manage end users at `/api/admin/end-users`: list, disable, re-enable, and revoke refresh-token families. Disabling sets `disabled_at`, revokes every refresh-token family, and the evaluator resolves the principal as `anonymous` until re-enabled; `login` and `refresh` for a disabled user return `401` with the uniform error shape.
+  *Enforcement:* register handler gate + `httpapi/admin` end-user handlers + `access.Evaluator`.
 
 ## 5. Access Control
 
@@ -113,25 +115,31 @@ This manual defines the non-negotiable invariants of golang-cms. Every rule stat
 
 - **BR-MEDIA-1.** Uploads go directly to object storage via presigned PUT URLs; the binary never proxies upload bytes. **[structural]**
   *Enforcement:* `media.Service.Presign` — no route accepts an upload body.
-- **BR-MEDIA-2.** Presigned URLs expire within 15 minutes and carry a content-length-range cap. The orphan sweep deletes storage objects with no finalized media record after 24 hours. *(Resolves EC-9.)*
+- **BR-MEDIA-2.** Presigned URLs expire within 15 minutes and carry a content-length-range cap. The orphan sweep deletes the storage object and row for `cms_media` rows stuck in `pending` after 24 hours. *(Resolves EC-9.)*
   *Enforcement:* `media.Service.Presign` policy + `jobs.Retention` orphan sweep.
 - **BR-MEDIA-3.** Media records finalize only after the client confirms upload; a media field value always references a finalized record.
   *Enforcement:* `media.Service.Finalize` + `content.Document.Set` reference validation.
 - **BR-MEDIA-4.** The binary never processes pixels; transformation is Cloudflare Image Resizing's job. **[structural]**
   *Enforcement:* dependency policy (BR-RUNTIME-2) — no imaging library exists in `go.mod`.
+- **BR-MEDIA-5.** Media deletion runs one transaction that deletes the `cms_media` row — FK RESTRICT produces the `409` while any record references it — and inserts the `object_key` into `cms_media_deletions`; the storage object is deleted after commit and the queue row cleared on success. `jobs.Retention` retries queue entries older than one hour, so a crash between commit and object deletion never strands an object.
+  *Enforcement:* `media.Service.Delete` + `jobs.Retention`.
 
 ## 7. API Conduct
 
 - **BR-API-1.** List endpoints clamp `limit` to 100 (default 25), always append the stable `id` tiebreaker sort, and reject `offset` greater than 10,000 with `422 validation_failed`. *(Resolves EC-11.)*
   *Enforcement:* `httpapi.ParsePagination` — shared by all list handlers.
-- **BR-API-2.** Public and API-key reads return only published, non-trashed records unless the key scope explicitly grants draft access.
+- **BR-API-2.** Public and API-key reads return only published, non-trashed records unless the key scope explicitly grants draft access or the record was created by the requesting principal: authenticated public principals (end users and API keys) always see records they created, including drafts (owner-draft visibility). Anonymous reads remain published-only without exception.
   *Enforcement:* `query.Builder` public-scope base predicate.
 - **BR-API-3.** Every error response uses the shared envelope `{"error": {"code", "message", "details"}}`.
   *Enforcement:* `httpapi.WriteError` — the only error-writing function.
-- **BR-API-4.** Public-scope list queries accept `filter`/`sort` only on fields marked `indexed` or `unique`; violations return `422` naming the field. Admin and trash scopes accept any schema field.
-  *Enforcement:* `query.Builder` scope-aware field validation.
-- **BR-API-5.** Anonymous public reads carry `Cache-Control: public, s-maxage=60, stale-while-revalidate=60` and a strong `ETag`; any request bearing `Authorization` or a cookie receives `Cache-Control: no-store` without exception.
+- **BR-API-4.** Public-scope list queries accept `filter`/`sort` only on fields marked `indexed` or `unique`, with the operator set `eq, neq, lt, lte, gt, gte, in` — `contains` is admin- and trash-scope only in V1, because infix `ILIKE` cannot use B-tree indexes and would reopen the anonymous scan vector; violations return `422` naming the field or operator. Admin and trash scopes accept any schema field and the full operator set.
+  *Enforcement:* `query.Builder` scope-aware field and operator validation.
+- **BR-API-5.** Anonymous public reads carry `Cache-Control: public, s-maxage=60, stale-while-revalidate=60` and a strong `ETag`; any request bearing `Authorization` or a cookie receives `Cache-Control: no-store` without exception. A conditional GET presenting a matching `If-None-Match` returns `304 Not Modified`; the ETag is a strong hash of the response body.
   *Enforcement:* `httpapi` response headers on public routes.
+- **BR-API-6.** Every `/api/v1` response carries `Access-Control-Allow-Origin: *`. Preflight `OPTIONS` requests are handled before authentication and rate limiting and answered with `Access-Control-Allow-Headers: Authorization, Content-Type, Idempotency-Key`, `Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS`, and `Access-Control-Max-Age: 86400`; non-preflight responses expose `X-Request-ID` and `ETag` via `Access-Control-Expose-Headers`. `/api/admin/*` and the SPA emit no CORS headers — the admin surface is same-origin only (cookie + CSRF). The wildcard is safe because bearer tokens are not ambient credentials: CORS never causes a browser to attach a victim's JWT, and cookies are never accepted on `/api/v1`.
+  *Enforcement:* `middleware.CORS` mounted on the `/api/v1` subtree only.
+- **BR-API-7.** Anonymous public reads rate-limit at 300 requests per minute per client IP (`429 rate_limited` beyond). `?count=exact` requires an authenticated principal; anonymous use returns `422 validation_failed` naming the parameter.
+  *Enforcement:* `middleware.RateLimit` anonymous-read bucket + `httpapi.ParsePagination`.
 
 ## 8. Audit
 
@@ -158,6 +166,7 @@ This manual defines the non-negotiable invariants of golang-cms. Every rule stat
 | `R2_PUBLIC_BUCKET_URL` | — | Public custom domain or dev URL for direct asset delivery. |
 | `CMS_RECOVERY_EMAIL` | unset | When set at startup, enables single-use super-admin recovery (BR-AUTH-12). |
 | `CMS_TRUSTED_PROXY_CIDRS` | empty | Peers within these CIDRs are trusted to append `X-Forwarded-For` (05 §5). |
+| `CMS_END_USER_REGISTRATION` | `disabled` | Enables end-user registration when set to `enabled` (BR-AUTH-14). |
 | `CMS_PORT` | `8080` | HTTP server bind port. |
 | `CMS_LOG_LEVEL` | `info` | `slog` level (debug, info, warn, error). |
 | `CMS_TRASH_RETENTION_DAYS` | `30` | Days a trashed record persists before auto-purge. |
