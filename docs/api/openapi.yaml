@@ -26,6 +26,10 @@ paths:
       summary: List records in a collection under the caller's scope.
       description: Normative behavior in docs/architecture/04-api-layer.md
       operationId: listCollectionRecords
+      security:
+        - apiKey: []
+        - jwt: []
+        - {}
       parameters:
         - name: limit
           in: query
@@ -46,7 +50,10 @@ paths:
           in: query
           schema:
             type: string
-          description: Opaque keyset cursor; mutually exclusive with offset.
+          description: >-
+            Opaque keyset cursor; mutually exclusive with offset. V2 (F-27):
+            not available on this public route in V1; V1 cursors exist on
+            admin lists only.
         - name: count
           in: query
           schema:
@@ -62,7 +69,11 @@ paths:
             type: object
           description: >-
             filter[<field>][<op>]=<value>, where op is one of eq, neq, lt,
-            lte, gt, gte, in, contains.
+            lte, gt, gte, in, contains. Note: style deepObject natively
+            models one nesting level; the real grammar is two-level
+            (filter[field][op]=value) as specified in
+            04-api-layer.md — codegen consumers should treat this
+            parameter as documentation, not a faithful machine model.
         - name: sort
           in: query
           schema:
@@ -139,6 +150,10 @@ paths:
       summary: Fetch a single record under the caller's scope.
       description: Normative behavior in docs/architecture/04-api-layer.md
       operationId: getCollectionRecord
+      security:
+        - apiKey: []
+        - jwt: []
+        - {}
       parameters:
         - name: expand
           in: query
@@ -164,6 +179,7 @@ paths:
       summary: Register a new end-user account.
       description: Normative behavior in docs/architecture/04-api-layer.md
       operationId: authRegister
+      security: []
       requestBody:
         required: true
         content:
@@ -189,6 +205,7 @@ paths:
       summary: Log in an end-user and issue JWTs.
       description: Normative behavior in docs/architecture/04-api-layer.md
       operationId: authLogin
+      security: []
       requestBody:
         required: true
         content:
@@ -214,6 +231,7 @@ paths:
       summary: Refresh an end-user JWT using a refresh token.
       description: Normative behavior in docs/architecture/04-api-layer.md
       operationId: authRefresh
+      security: []
       requestBody:
         required: true
         content:
@@ -239,6 +257,7 @@ paths:
       summary: Log out an end-user and revoke the refresh token family.
       description: Normative behavior in docs/architecture/04-api-layer.md
       operationId: authLogout
+      security: []
       requestBody:
         required: true
         content:
@@ -264,6 +283,8 @@ paths:
       summary: Request a password reset token for an end-user account.
       description: Normative behavior in docs/architecture/04-api-layer.md
       operationId: authPasswordResetRequest
+      security:
+        - apiKey: []
       requestBody:
         required: true
         content:
@@ -289,6 +310,7 @@ paths:
       summary: Confirm a password reset with a token and new password.
       description: Normative behavior in docs/architecture/04-api-layer.md
       operationId: authPasswordResetConfirm
+      security: []
       requestBody:
         required: true
         content:
@@ -354,7 +376,9 @@ components:
                   type: string
                   description: >-
                     Optional. Present only when keyset cursor pagination
-                    applies and a further page exists.
+                    applies and a further page exists. V2 (F-27): not
+                    available on this public route in V1; V1 cursors exist
+                    on admin lists only.
     Error:
       type: object
       required:

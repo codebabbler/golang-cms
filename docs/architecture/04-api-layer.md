@@ -22,6 +22,8 @@ This document specifies the HTTP surface: routes, the normative middleware order
 
 The envelope and error registry are v1-stable and evolve additively only.
 
+A machine-readable skeleton of this surface lives at `docs/api/openapi.yaml`; this document remains normative on any disagreement.
+
 ## Middleware Order (Normative)
 
 ```text
