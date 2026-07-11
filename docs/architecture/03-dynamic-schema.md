@@ -52,7 +52,7 @@ Every schema change runs inside one transaction that first acquires `pg_advisory
 **Concurrent schema change vs. in-flight writes** *(Resolves EC-1)*: three mechanisms compose.
 
 1. The advisory lock serializes schema changes against each other — two admins cannot interleave DDL.
-2. Postgres's own `ACCESS EXCLUSIVE` lock on the altered table queues the DDL behind in-flight DML statements and queues new DML behind the DDL; no write ever sees a half-altered table. New reads also queue: DDL that rewrites the table holds ACCESS EXCLUSIVE, which conflicts with ACCESS SHARE.
+2. Postgres's own `ACCESS EXCLUSIVE` lock on the altered table queues the DDL behind in-flight DML statements and queues new DML behind the DDL; no write ever sees a half-altered table. New reads also queue: every whitelisted ALTER TABLE takes ACCESS EXCLUSIVE — briefly for metadata-only changes, for the full rewrite duration on type changes — and ACCESS EXCLUSIVE conflicts with ACCESS SHARE.
 3. The in-memory schema cache swaps atomically before the advisory lock releases (BR-RUNTIME-7), so no request planned after the change uses stale metadata. A request planned *before* a destructive change may still reference a dropped column and receives the standard error envelope; with a single-tenant admin population, this window is accepted and audited rather than prevented.
 
 ## Destructive Changes (BR-SCHEMA-7)
@@ -80,7 +80,7 @@ Restore maps a historical JSONB snapshot onto the *current* schema; it never fai
 
 ## FTS Interaction (V2) — EC-12
 
-Each collection's `search_config` names the searchable fields and weights. V2 materializes search as a generated `tsvector` column plus GIN index on the collection table. Any schema change that affects search — editing `search_config`, dropping or type-changing a searchable field — regenerates the column and index inside the same advisory-locked transaction as the triggering change. The rebuild is a table rewrite: The rebuild holds ACCESS EXCLUSIVE: reads and writes to that collection stall for its duration (~seconds at the 100k-row design point; the audit event records the duration — schedule heavy changes off-peak). Search results are never stale relative to committed schema and never reference dropped fields. *(Resolves EC-12.)*
+Each collection's `search_config` names the searchable fields and weights. V2 materializes search as a generated `tsvector` column plus GIN index on the collection table. Any schema change that affects search — editing `search_config`, dropping or type-changing a searchable field — regenerates the column and index inside the same advisory-locked transaction as the triggering change. The rebuild holds ACCESS EXCLUSIVE: reads and writes to that collection stall for its duration (~seconds at the 100k-row design point; the audit event records the duration — schedule heavy changes off-peak). Search results are never stale relative to committed schema and never reference dropped fields. *(Resolves EC-12.)*
 
 **V2 Alternative: `CREATE INDEX CONCURRENTLY` with Reconciliation.** To avoid stalls during large-table rebuilds, an alternative strategy maintains the `tsvector` column through database triggers (one INSERT/UPDATE trigger per collection, dynamically created at schema load). Index creation uses `CREATE INDEX CONCURRENTLY` outside the schema transaction, with a subsequent reconciliation step to detect and repair any rows inserted during the index build. This trades synchronous lockout for bounded staleness (stale reads during the ~seconds-long index build) and an async reconciliation pass. The choice between strategies is site-wide configuration; both guarantee search results never reference dropped fields.
 
@@ -93,4 +93,4 @@ Each collection's `search_config` names the searchable fields and weights. V2 ma
 | EC-3 | Safe-conversion matrix with 422 rejection (Safe-Conversion Matrix) |
 | EC-4 | ID-based references; rename = slug + table rename in one transaction (Collection Rename) |
 | EC-5 | Four-rule drift mapping on restore (Revision Restore After Schema Drift) |
-| EC-12 | Synchronous tsvector regeneration under the schema lock (FTS Interaction) |
+| EC-12 | Synchronous tsvector regeneration under the schema lock (FTS Interaction); CONCURRENTLY alternative documented for large collections |
