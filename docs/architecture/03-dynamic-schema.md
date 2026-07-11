@@ -31,6 +31,8 @@ The engine executes exactly these operations; `schema.Engine.Apply` rejects anyt
 | AddIndex / DropIndex | field exists | `CREATE INDEX` / `DROP INDEX` on `"c_<slug>"` | duplicate index → no-op |
 | AddForeignKey / DropForeignKey | relation field; target exists | `ALTER TABLE ... ADD CONSTRAINT ... REFERENCES "c_<target>"(id) ON DELETE RESTRICT` | orphaned values present → 409 with count |
 
+`media` fields do not use AddForeignKey: AddField on a `media` field emits its constraint inline — `ADD COLUMN "<slug>" UUID REFERENCES cms_media(id) ON DELETE RESTRICT` — so every media column carries the FK that `07-data-model.md`'s media-deletion 409 depends on. AddForeignKey/DropForeignKey apply to `relation` fields only.
+
 ## Safe-Conversion Matrix (BR-SCHEMA-5)
 
 The engine permits exactly two conversion classes; it rejects everything else with a remediation message naming the drop-and-recreate path. *(Resolves EC-3.)*
