@@ -1,6 +1,6 @@
 # 08 — Observability
 
-**Version:** 1.0 · **Last Updated:** 2026-07-08 · **Owner:** Miraj Aryal
+**Version:** 1.1 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
 
 Structured logs are the telemetry surface. The binary ships no metrics endpoint and no tracing dependency in V1 — adding either would breach the dependency invariant's spirit of operational minimalism (BR-RUNTIME-2); log-derived dashboards cover the single-tenant operational questions.
 
@@ -14,7 +14,7 @@ Structured logs are the telemetry surface. The binary ships no metrics endpoint 
 ```
 
 - Routes log as chi patterns, not raw paths — no record IDs or slugs leak into aggregatable fields; raw paths appear only at `debug`.
-- Secrets never log: no tokens, cookie values, password material, presigned URLs, or JWT bodies at any level. The API-key `cms_` prefix makes accidental leakage greppable in CI log-assertion tests.
+- Secrets never log: no tokens, cookie values, password material, presigned URLs, or JWT bodies at any level. The API-key `cms_` prefix makes accidental leakage greppable in CI log-assertion tests. Sole exceptions: the single-use setup (BR-AUTH-11) and recovery (BR-AUTH-12) tokens, logged once at `warn` with a 30-minute TTL.
 - Recovered panics log at `error` with stack traces and the request ID, then return the `internal` envelope (`04-api-layer.md`).
 
 ## Request Correlation
@@ -35,9 +35,9 @@ V1 sink — a distinguished `slog` line:
 
 ## Job Telemetry
 
-Both tickers log start/finish with counts and durations:
+Both tickers log start/finish with counts and durations. Tickers wrap each tick in panic recovery: a panicking job logs at `error` and skips to the next tick.
 
-- `jobs.Retention` (hourly): trashed rows purged, purges skipped on FK RESTRICT (each skip names the blocking reference), revisions pruned, media orphans swept.
+- `jobs.Retention` (hourly): expired sessions purged, used and expired reset tokens purged, rotated and revoked refresh tokens > 30 days purged, trashed rows purged, purges skipped on FK RESTRICT (each skip names the blocking reference), revisions pruned, idempotency rows > 24 h purged, media orphans swept.
 - `jobs.Publisher` (V2, every 30 s): records published on schedule.
 
 **Missed-schedule catch-up** *(Resolves EC-13, observability half)*: the startup catch-up scan logs one `warn` line per late publication with `scheduled_at`, `published_at`, and the delay — downtime-induced lateness is visible and alertable, never silent. `09-deployment.md` owns the startup-ordering half.
@@ -48,7 +48,11 @@ Every `schema.Engine.Apply` logs the operation, duration, and — for V2 search 
 
 ## Health
 
-`/healthz` returns 200 once startup completes (migrations, schema cache, catch-up — BR-RUNTIME-3) and the database ping succeeds; it returns 503 during drain (EC-14, `09-deployment.md`). It is the only unauthenticated non-SPA endpoint.
+`/healthz` (liveness): returns 200 once the process has started; returns 503 during drain (EC-14, `09-deployment.md`). Supervisors restart on `/healthz`.
+
+`/readyz` (readiness): pings the database and returns 200 on success, 503 on failure. Proxies route on `/readyz`.
+
+`/healthz`, `/readyz`, `/api/v1/auth/*`, and anonymous public reads are the unauthenticated surfaces.
 
 ## Edge-Case Coverage (this document)
 
