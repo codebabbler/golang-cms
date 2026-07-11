@@ -1,6 +1,6 @@
 # golang-cms — Requirements
 
-**Version:** 1.2 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
+**Version:** 1.3 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
 
 This document defines what golang-cms delivers, for whom, and how delivery is verified. Functional requirements carry version tags; the system ships in three releases (V1 MVP, V2 Polish & Search, V3 Commerce & Video). Invariant-level rules live in `BUSINESS_RULES.md`; this document references them rather than restating them.
 
@@ -80,6 +80,7 @@ golang-cms is a headless, config-driven CMS delivered as a single Go binary serv
 - **N-11.** The system fails closed: on schema-cache or access-rule load failure, affected requests return errors rather than serving stale or permissive results.
 - **N-12.** RPO ≤ 5 minutes and RTO ≤ 1 hour via WAL-based point-in-time recovery; scheduled `pg_dump` remains the portable second copy; a restore drill precedes V1 release.
 - **N-13.** The service is single-instance: upgrades cost drain-plus-startup downtime and the availability class is ~99.5%; high availability is out of scope.
+- **N-14.** Availability (N-13) is measured by an external HTTP probe against `/readyz` — any uptime monitor, evaluated monthly against the ~99.5% class. The probe and the alert wiring of `docs/architecture/08-observability.md` §Alerting are deployment obligations outside the binary; BR-RUNTIME-2 is untouched.
 
 ## 5. Out of Scope
 
