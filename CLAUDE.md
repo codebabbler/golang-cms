@@ -24,6 +24,7 @@ Headless, config-driven CMS: one Go binary, one tenant. Admins define collection
 | `docs/architecture/09-deployment.md` | Build, startup/shutdown, proxy contract, cache busting |
 | `docs/architecture/10-project-structure.md` | Package layout, import rules, Makefile |
 | `docs/architecture/11-roadmap.md` | V1/V2/V3 scopes and delivery gates |
+| `docs/architecture/12-access-rules.md` | Grant-matrix schema, evaluation algorithm, audiences, API-key scopes |
 
 ## Skills (invoke before touching the subsystem)
 
@@ -46,7 +47,7 @@ Headless, config-driven CMS: one Go binary, one tenant. Admins define collection
 3. DDL runs only through `schema.Engine`'s closed whitelist — BR-SCHEMA-4.
 4. Error responses only via `httpapi.WriteError` with the closed code registry — BR-API-3.
 5. No runtime dependencies beyond PostgreSQL 16+ and S3-compatible storage — BR-RUNTIME-2.
-6. Never log tokens, cookie values, presigned URLs, or JWT bodies.
+6. Never log tokens, cookie values, presigned URLs, or JWT bodies — sole exceptions: the single-use setup/recovery tokens (BR-AUTH-11/12), logged once at warn with a 30-minute TTL.
 
 ## Workflow
 
