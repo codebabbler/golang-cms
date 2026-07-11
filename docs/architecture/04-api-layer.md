@@ -1,6 +1,6 @@
 # 04 — API Layer
 
-**Version:** 1.2 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
+**Version:** 1.3 · **Last Updated:** 2026-07-11 · **Owner:** Miraj Aryal
 
 This document specifies the HTTP surface: routes, the normative middleware order, the response envelope, pagination, filtering, relation expansion, and the upload flow. Every handler composes the interfaces of `02-core-interfaces.md`; no handler builds SQL or bypasses `Document.Set`.
 
@@ -62,6 +62,7 @@ Error — one shape everywhere, written only by `httpapi.WriteError` (BR-API-3):
 | `rate_limited` | 429 | `middleware.RateLimit` (BR-AUTH-6). |
 | `payload_too_large` | 413 | Presign size over cap; request bodies over limit. |
 | `internal` | 500 | Recovered panics; post-schema-change stale-plan window (EC-1, `03-dynamic-schema.md`). |
+| `unavailable` | 503 | Media routes in media-less mode (BR-MEDIA-6). |
 
 Request-body caps producing `payload_too_large`: **5 MiB** on record-write routes (`.../records` create/update, sized to accommodate the 1 MiB per-field cap with headroom), **64 KiB** on every other route (auth, presign, finalize, and all remaining non-content routes).
 
@@ -83,7 +84,7 @@ Anonymous `ScopePublic` GETs carry `Cache-Control: public, s-maxage=60, stale-wh
 
 ## CORS (BR-API-6)
 
-Every `/api/v1` response carries `Access-Control-Allow-Origin: *`. Preflight `OPTIONS` requests are handled before authentication and rate limiting and answered with `Access-Control-Allow-Headers: Authorization, Content-Type, Idempotency-Key`, `Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS`, and `Access-Control-Max-Age: 86400`; non-preflight responses expose `X-Request-ID` and `ETag` via `Access-Control-Expose-Headers`. `/api/admin/*` and the SPA emit no CORS headers — the admin surface is same-origin only (cookie + CSRF, BR-AUTH-4). The wildcard is safe because bearer tokens are not ambient credentials: CORS never causes a browser to attach a victim's JWT, and cookies are never accepted on `/api/v1`. Because `Access-Control-Allow-Origin` is the constant `*`, the cached anonymous responses of BR-API-5 need no `Vary: Origin`.
+Every `/api/v1` response carries `Access-Control-Allow-Origin: *`. Preflight `OPTIONS` requests are handled before authentication and rate limiting — exempt because they carry no body, touch no database, and are edge-cacheable for 24 hours via `Access-Control-Max-Age` — and answered with `Access-Control-Allow-Headers: Authorization, Content-Type, Idempotency-Key`, `Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS`, and `Access-Control-Max-Age: 86400`; non-preflight responses expose `X-Request-ID` and `ETag` via `Access-Control-Expose-Headers`. `/api/admin/*` and the SPA emit no CORS headers — the admin surface is same-origin only (cookie + CSRF, BR-AUTH-4). The wildcard is safe because bearer tokens are not ambient credentials: CORS never causes a browser to attach a victim's JWT, and cookies are never accepted on `/api/v1`. Because `Access-Control-Allow-Origin` is the constant `*`, the cached anonymous responses of BR-API-5 need no `Vary: Origin`.
 
 ## Idempotent Creates
 
@@ -91,7 +92,7 @@ Public and API-key `POST` create endpoints under `/api/v1/collections/{slug}/rec
 
 Supplying the same `Idempotency-Key` from the same principal again within a 24-hour window returns the original creation result instead of creating a duplicate record. Keys are tracked in `cms_idempotency_keys` (`key_hash`, `principal_id`, `record_id`, `request_hash`, `created_at`; unique on `(key_hash, principal_id)`; see `07-data-model.md`) and purged by `jobs.Retention` 24 hours after creation.
 
-The idempotency row inserts in the same transaction as the record — a crash cannot separate them. A concurrent request with the same key blocks on the unique index until the first transaction resolves: if it committed, the second request returns the original outcome; if it aborted, the second proceeds as a fresh create. The row stores a `request_hash` of the request body: presenting the same key with a different body returns `422 validation_failed`. The first create returns `201`; a replay returns the record's **current** representation with `200` — or `404` if the record has since been purged.
+The idempotency row inserts in the same transaction as the record — a crash cannot separate them. A concurrent request with the same key waits on the unique index up to 5 seconds for the first transaction to resolve: if it committed, the second request returns the original outcome; if it aborted, the second proceeds as a fresh create; if it is still in flight after 5 seconds, the second returns `409 conflict` (request in progress — retry). The row stores a `request_hash` of the request body: presenting the same key with a different body returns `422 validation_failed`. The first create returns `201`; a replay returns the record's **current** representation with `200` — or `404` if the record has since been purged.
 
 ## Relation Expansion
 
