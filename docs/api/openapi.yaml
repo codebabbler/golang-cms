@@ -403,6 +403,7 @@ components:
                 - rate_limited
                 - payload_too_large
                 - internal
+                - unavailable
             message:
               type: string
             details:

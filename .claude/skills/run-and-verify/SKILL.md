@@ -26,7 +26,7 @@ Tear down with `docker stop cms-pg` (container is `--rm`). Never point a dev bin
 
 ## Environment
 
-Minimum to boot: `DATABASE_URL` plus `CMS_MASTER_SECRET` (any 32+ random bytes). All variables: `docs/BUSINESS_RULES.md` § Naming Constants. Without the `S3_*`/`R2_*` variables the binary boots and everything except media flows works — media smoke steps below are skipped in that case.
+Minimum to boot: `DATABASE_URL` plus `CMS_MASTER_SECRET` (any 32+ random bytes). All variables: `docs/BUSINESS_RULES.md` § Naming Constants. Without the `S3_*` variables the binary boots in media-less mode (media routes return `503 unavailable` — BR-MEDIA-6) and everything except media flows works — media smoke steps below are skipped in that case.
 
 ## Build and Run
 
