@@ -53,5 +53,5 @@ Headless, config-driven CMS: one Go binary, one tenant. Admins define collection
 
 - Commands: `make build` (vite→go), `make test` (unit+integration, disposable PG16), `make trace` (BR coverage gate), `make generate` (sqlc), `make dev`.
 - Git: the user commits; never commit or stage unless explicitly asked.
-- Flow: brainstorm → spec (`docs/superpowers/specs/`) → plan (`docs/superpowers/plans/`) → subagent-driven execution for code.
+- Flow: brainstorm → spec (`docs/superpowers/specs/`) → plan (`docs/superpowers/plans/<version>/`, e.g. `v1/`, `v2/`) → subagent-driven execution for code.
 - Done = smoke-relevant checks pass AND `make test && make trace` green — not "it compiles."
