@@ -189,6 +189,43 @@ Migrations 0003–0008 consistent; waiver seed/empty choreography correct modulo
 
 **Status: V2 review COMPLETE (8/8 + cross-pass). V2 findings: 1 HIGH carried+confirmed (F-v2p8-1) + F-v2p1-1 HIGH (self-detecting) + 1 new V1 HIGH (F-v1p3-4); 8 MEDIUM; 8 LOW. Next: V3 plans (5).**
 
+### v3p1 commerce-foundation — reviewed in full
+
+- **F-v3p1-1 (MEDIUM)** — Price-field protection covers drop/type-change but not **rename**: `commerce_config.priceField` stores a slug, so renaming the price field strands the config (cart hydration/checkout then error at runtime). Fix jointly with F-v2p5-1: one rename-propagation mechanism updating `search_config` AND `commerce_config` slugs in the rename tx.
+- **F-v3p1-2 (LOW)** — Task 4's `grep -c '(V3)' docs/BUSINESS_RULES.md` false-positives on the preamble sentence ("Rules tagged (V2) or (V3)…"); grep the rule-tag pattern instead.
+
+### v3p2 carts — reviewed in full
+
+- **F-v3p2-1 (MEDIUM)** — Cart item ops are read-modify-write over the `items` JSONB with no concurrency control: two concurrent AddItems lose one (last-write-wins upsert). Fix: wrap ops in a tx with `SELECT … FOR UPDATE` on the cart row (`GetCartByUserForUpdate`).
+- **F-v3p2-2 (LOW)** — The `display` value (first `text` field) ignores audience field rules — a field `hideFrom: ["end_user"]` still leaks via cart hydration; pick the first *visible* text field.
+
+### v3p3 stripe-orders — reviewed in full
+
+- **F-v3p3-1 (HIGH, money correctness)** — `checkout.session.completed → paid` is unconditional, but for **async payment methods** Stripe fires `completed` with `payment_status: "unpaid"`, then `async_payment_succeeded/failed` later. As planned: an async order is marked `paid` at completed, and the later `async_payment_failed` no-ops (`pending→failed` matches 0 rows) — **order paid, money never received**. Fix: read `payment_status` from the completed event (`paid` → transition; `unpaid` → stay pending), handle `checkout.session.async_payment_succeeded → paid`; optionally pin `payment_method_types=card` at session create as belt-and-suspenders.
+- **F-v3p3-2 (LOW)** — "clear the user's cart" inside the paid tx must go through a tx-scoped store call (`DeleteCartByUser` via `q.WithTx`), not `CartService.Clear` — name it.
+
+Verified-good (v3p3): BR-COM-1 type-shape enforcement (no amount field exists); signature scheme with rotation + tolerance + constant-time; zero-rows idempotency incl. replay/hook-not-rerun tests; pending-only cleanup vs webhook race; amount-mismatch warn line; secrets regexes; manual gate step verbatim.
+
+### v3p4 video-paywalls — reviewed in full
+
+- **F-v3p4-1 (MEDIUM)** — The paywall is only real if the CF Stream video has `requireSignedURLs` enabled — otherwise the public unsigned URL plays regardless of our tokens. Add the operator prerequisite to the 09/05 amendments and to the manual gate step ("confirm requireSignedURLs on the test video").
+- **F-v3p4-2 (MEDIUM, product decision)** — Unpublishing (or purging) a purchased record locks out entitled buyers: the token endpoint's step-2 visibility gate fires before the entitlement check. Triage: accept + document ("unpublish suspends buyer playback"), or let a valid entitlement bypass the publish floor at step 2 for the token route only.
+
+Verified-good (v3p4): field type end-to-end with no-URL-anywhere regex test; CF JWT format (kid/sub/exp RS256) matches CF Stream's scheme; TTL cap at the adapter; idempotent hook+backfill; gate-order normative list; erasure CASCADE assertion; PEM secrets regex.
+
+### v3p5 tiptap-blocks — reviewed in full
+
+- **F-v3p5-1 (LOW)** — Gate task arithmetic typo: "seventeen + thirteen = twenty-two plans" (it's 9+8+5=22; 17+13=30).
+- **F-v3p5-2 (LOW)** — Add a test case: a block inside an *expanded relation target's* richText also resolves (the shared-walk assumption, currently untested).
+
+Verified-good (v3p5): shape-only validation with survival semantics; batched anonymous-strict resolution with deep-equal null-survival test; pure-renderer figure placeholders; missing-reference editor state; shared-allowlist hardening note; gate checklist covers §C incl. both manual steps + mode matrix.
+
+### V3 cross-cutting pass — complete
+
+Migrations 0009–0012 consistent; waiver stays empty (all new BRs land with tests); UAC-3.1→p3, 3.2→p4, 3.3→p5 anchored; erasure accrual (carts CASCADE, orders tombstone, entitlements CASCADE) coherent given F-v2p8-1's reorder; OrderPaidHook/CommerceConfig/RequireCommerce hand-offs verified; mode matrix in the gate.
+
+**Status: REVIEW COMPLETE — all 22 plans + 3 cross-cutting passes. Totals: 10 HIGH, 20 MEDIUM, ~25 LOW. Consolidated triage report: `docs/reviews/2026-07-14-plan-review-v1-v3.md`.**
+
 ## Cross-version ledger
 
 ### V1 → V2/V3 (what later plans consume; verified as-produced unless flagged)
