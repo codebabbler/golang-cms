@@ -118,6 +118,77 @@ Verified-good (v1p9): client contract (envelope, typed errors, CSRF-in-memory, 4
 - **Security lens:** authz floors present on every new route; never-log list enforced by P8 sweep; F-v1p5-1 (register oracle) is the one conformance break; F-v1p7-1 is an authz-granularity gap; no missing CSRF/recent-auth on destructive flows found.
 - **Ops lens:** startup steps accrue in order (P1 seams → P2 step5 → P3 step4 → P5 keystore → P8 scheduler); EC-14 ordering correct once P8 lands; F-v1p1-2 (Flusher) is the one plumbing gap.
 
+### v2p1 audit-log — reviewed in full
+
+- **F-v2p1-1 (HIGH, carry-in confirmed; self-detecting)** — Task 6 Step 2 reseeds the waiver with the bare line `BR-LIFE-9`; trace.sh's match regex `^${id}[[:space:]]` requires a trailing field, so the entry is invisible → `make trace` goes RED at Step 3's own verification. Plan ships known-red instructions even though the executor would spot it. Fix jointly with F-v1p1-4: regex `^${id}([[:space:]]|$)` in v1p1 AND write the annotated form `BR-LIFE-9 V2-P2` here.
+- **F-v2p1-2 (LOW)** — Self-Review note "system actor intentionally absent until V2-P2" becomes false once F-v1p8-1 pulls `KindSystem` into V1 (retention purge audits); update the note and ensure the audit browser's actor-kind filter includes `system`.
+
+Verified-good (v2p1): §D1 DDL verbatim; sqlc narg/row-comparison keyset SQL valid; reflection-based no-mutation test; dual-sink degradation with detached 2s ctx; viewer exclusion; flip mechanics + self-verifying trace step; handler-local bigint cursor decision sound.
+
+### v2p2 scheduled-publishing — reviewed in full
+
+- **F-v2p2-1 (MEDIUM, carry-in confirmed)** — migration 0004's DO block builds `'ix_c_'||slug||'_publish_at'` raw; V1's slug cap is 55 chars (`{0,54}`), so the name can reach 71 bytes and Postgres silently truncates to 63 — diverging from `indexName()`'s 20+8-hash rule, breaking rename-cascade and IF-NOT-EXISTS dedup for long slugs. Fix: the DO block must implement the same truncation rule in plpgsql (substr + sha256 via pgcrypto/encode — or precompute names in a preceding SQL SELECT), plus a parity test comparing plpgsql and Go naming for a >63-byte case. Same audit applies to 0005's seo backfill (no index — clean).
+- **F-v2p2-2 (LOW)** — `query.SetPublishAt` writes `updated_at = now()` (DB clock) while the V1 convention is app-side UTC timestamps; align or document.
+- **F-v2p2-3 (LOW)** — Preamble cites "V1-P3 T?" (it's T5); Unschedule's role floor is implied, not stated — make both explicit.
+
+Verified-good (v2p2): BR-SCHEMA-8 amendment + anatomy-test growth; DB-now() semantics incl. ErrScheduleInPast via DB clock; drain-loop catch-up satisfying EC-13 with LIMIT rationale; per-record failure isolation retaining publish_at; system-principal lattice ride; publish/trash clearing; waiver emptied with stale-check leverage; pending-draft-of-published scheduling included (spec self-review fix carried through).
+
+### v2p3 redirects-seo — reviewed in full
+
+- **F-v2p3-1 (MEDIUM)** — `seo` rides every record write with no principal gating: end_user/api_key writers (public creates, createStatus flows) can set `canonical_url`/OG fields on records that may publish immediately — SEO spam/abuse surface. Neither spec §D3 nor 12's field rules cover the reserved envelope key. Fix: reject `seo` in the request body for non-admin-kind principals (422 naming `seo`) unless a future grant opts in; document in 04's write-shape amendment.
+- Ledger note: the `$seo` drift-rule-0 passthrough interacts with F-v1p4-1's merge-base fix — when the merge base becomes the pending revision, `$seo` must merge from the same base (one fix site).
+
+Verified-good (v2p3): freeze semantics literal; `$seo` reserved-key collision-free with slug grammar; blocklist growth; redirect DDL/CHECKs; lookup cache contract + 304; loop-detection stance documented; audit vocabulary domain growth forced by the V2-P1 parser test.
+
+### v2p4 public-api-polish — reviewed in full
+
+- **F-v2p4-1 (LOW)** — Renderer mark allowlist (bold/italic/link) is narrower than the starter-kit marks P9's editor emits (`code`, `strike`): those marks silently drop in HTML output. Either add `code`→`<code>`/`strike`→`<s>` or configure the P9 editor to exclude them — pick one side and test it.
+- **F-v2p4-2 (LOW)** — Task 3's XSS corpus should add case/whitespace scheme variants (`JaVaScRiPt:`, `\tjavascript:`) and pin that href/src validation goes through `url.Parse` scheme comparison, not string prefix.
+
+Verified-good (v2p4): trgm index DDL in the whitelist with type gating + rename carry; contains gate condition exact; cursor exposure reuses V1 mechanics with the old 422 case deleted-not-duplicated; renderer contract (leaf escaping, unknown-node text-only, depth cap, pure function); format=html canonical-untouched byte test; ETag-by-body making format variants safe; ILIKE-confinement grep.
+
+### v2p5 fts — reviewed in full
+
+- **F-v2p5-1 (MEDIUM)** — The EC-12 regen hook covers field **drop** and **type-change** but not **rename**: `search_config` stores field slugs, so renaming a searched field leaves the config naming a dead slug (validation of the next op fails; the drop-hook's slug match misses). Fix: RenameField, when the field is in `search_config`, rewrites the config slug in the same tx (the generated column itself survives renames — PG tracks by attnum).
+- **F-v2p5-2 (MEDIUM)** — tsvector values cap at ~1 MiB; richText fields allow 1 MiB each and up to 16 searched fields, so the generated expression can exceed the limit — making **row writes fail on searched collections** with large content. Fix: wrap the extractor in a length cap (`left(cms_tiptap_text(…), 262144)` or similar) inside the generated expression and document the indexing truncation in 03's amendment.
+- **F-v2p5-3 (LOW, self-detecting)** — `jsonb_path_query` (set-returning, in a subquery) inside a `LANGUAGE sql` function backing a GENERATED column is *probably* legal on PG16 (the function isn't inlined because of `string_agg`), but it's the plan's shakiest Postgres assumption; Task 2's first test fails fast if wrong. Name the fallback in the plan: LANGUAGE plpgsql equivalent, or built-in `to_tsvector(regconfig, jsonb)` accepting node-type-name noise.
+
+Verified-good (v2p5): config shape/validation; regen-in-triggering-tx for drop/type-change; 'english' pin; scope-parity search with rank+id ordering; search_tsv strip; blocklist growth; UAC-2.1 arc incl. add-field-reindex clause; the trgm-toggle debt landing.
+
+### v2p6 webhooks — reviewed in full
+
+- **F-v2p6-1 (MEDIUM)** — Delivery claim semantics are underspecified: `ClaimDueDeliveries … FOR UPDATE SKIP LOCKED` only holds locks inside a transaction, but delivery then does seconds of HTTP before `MarkDelivered/MarkRetry` — the plan neither holds the tx (bad: HTTP inside tx) nor marks rows in-flight. Single-worker reality: rows aren't actually claimed; a crash between deliver and mark re-sends (at-least-once) without attempt increment. Fix: drop the misleading FOR UPDATE SKIP LOCKED (plain SELECT), state **at-least-once delivery** explicitly (consumers dedupe on `X-CMS-Delivery`), and document the crash-window re-send.
+- **F-v2p6-2 (MEDIUM, doc decision)** — **Unpublish emits no event** (F-22's set is create/update/publish/trash), yet the 04 amendment invites consumers to lengthen cache TTLs on the publish purge signal — an unpublished record then stays in consumer caches indefinitely. Triage: either amend F-22/spec to add `record.unpublish` (requirements touch) or the 04 amendment must scope TTL-lengthening advice to publish/trash-driven invalidation and name the unpublish hazard.
+- **F-v2p6-3 (LOW)** — `netip` classification misses shared address space `100.64.0.0/10` (CGNAT); add it (and consider 192.0.0.0/24) to the explicit deny list in `safeTransport`.
+- **F-v2p6-4 (LOW)** — Add one consumer-guidance sentence to the 04/05 amendment: verify HMAC over `timestamp.body` AND reject stale `X-CMS-Timestamp` (replay window).
+
+Verified-good (v2p6): outbox-in-tx atomicity with rollback test; nudge+ticker meeting the 30s bound; seal refactor with V1-suite-stays-green gate; SSRF matrix incl. DNS-pinning and redirect refusal; retry ladder + terminal failed; secrets regex growth; TEST-NET e2e trick; BR-HOOK-1/2 texts with enforcement points; retention duty 9.
+
+### v2p7 m2m-relations — reviewed in full
+
+- **F-v2p7-1 (MEDIUM)** — Publish/restore reconciliation hard-fails when a snapshot's membership target was **purged** since the draft (FK 23503 on the reconcile INSERT → the whole publish/restore 422s). EC-5's drift philosophy says restore degrades gracefully. Fix: reconcile filters the array to still-existing targets and reports dropped ids in the audit detail (mirror `skipped` from drift), instead of failing the operation.
+- **F-v2p7-2 (LOW)** — Add a self-referencing M2M test case (`posts.related → posts`): CASCADE-own-memberships + RESTRICT-inbound on one table is subtle enough to pin.
+
+Verified-good (v2p7): freeze-contract arc test; join anatomy/naming/truncation + collision check; rename cascade incl. target-rename-touches-nothing; omit-not-null with the leak rationale; page-wide query batching; 500-cap; cardinality conversion rejection; TxHook composition; purge mappings.
+
+### v2p8 import-export-gdpr — reviewed in full
+
+- **F-v2p8-1 (HIGH, carry-in confirmed)** — Task 4's erasure transaction deletes `cms_end_users` FIRST, then `cms_refresh_tokens` — but `cms_refresh_tokens.end_user_id` carries an FK (NO ACTION, v1p1 DDL): the parent delete violates it immediately, so **erasure always fails for any user who ever had a refresh token**. Fix: children first (refresh, reset), user row last (existence-check up front for ErrNotFound); V3's cart/entitlement CASCADEs stay correct either way. Self-detecting via the BR-AUTH-15 test, but the plan prescribes the broken order.
+- **F-v2p8-2 (MEDIUM)** — `RedactRevisions` validates field names against the **current** snapshot, so PII in revisions under renamed/dropped field slugs can never be redacted (unknown → 422) — the exact scenario GDPR redaction exists for. Fix: validate shape only (legal slug grammar) or current-∪-historical keys; keep the audit detail.
+- **F-v2p8-3 (dependent on F-v1p3-4 below)** — Schema-import pass 2 re-creates fields via `AddField`, which under the V1 whitelist provisions NO indexes: imported `unique`/`indexed`/`trgmIndexed` fields lose their indexes silently, breaking the UAC-2.2 "identical definitions" claim at the physical level (the export diff compares configs, masking it). Resolved by the F-v1p3-4 fix.
+
+Verified-good (v2p8): slug-keyed export with no UUIDs; two-pass cycle dissolution; strict-validate/per-op-apply with honest non-transactionality; ForceID additive flag; forward-reference drop-and-report stance; NDJSON streaming (needs F-v1p1-2's Flusher fix); tombstone literal; redaction never touches cms_audit_log; V2 gate sweep incl. doc future-tense scan.
+
+### V1 ADDENDUM (found during V2 review)
+
+- **F-v1p3-4 (HIGH, doc + plan)** — The DDL whitelist cannot provision declared indexes for fields added AFTER collection creation: 03's `AddField` template is bare `ADD COLUMN`; `AddIndex` creates only the plain composite `(field, id)` form; **no whitelisted op creates the partial-unique index** 07 contracts for `unique` fields (and V2-P4's trgm toggle is separate). A field added later with `unique: true` stores the flag but never gets enforcement — silent integrity gap; same for `indexed` unless the UI orchestrates AddIndex, and import (F-v2p8-3) hits it wholesale. Fix: `AddField` emits the column PLUS its declared index DDL (composite/partial-unique/trgm) in the same tx, 03 amendment updates the template row; `AddIndex/DropIndex` remain the standalone toggles.
+
+### V2 cross-cutting pass — complete
+
+Migrations 0003–0008 consistent; waiver seed/empty choreography correct modulo F-v2p1-1; vocabulary growth enforced by v2p1's parser-equality test in every phase; UAC-2.1→p5, 2.2→p6+p8, 2.3→p2, 2.4→p1+p3 all anchored; interface hand-offs (Actions(), TxHook→p7, JunctionArrays→p8, trgm-UI debt p4→p5) verified; V2's "V1 gates stay green" wording inherits F-v1x-1's 1.6/1.7 enumeration fix.
+
+**Status: V2 review COMPLETE (8/8 + cross-pass). V2 findings: 1 HIGH carried+confirmed (F-v2p8-1) + F-v2p1-1 HIGH (self-detecting) + 1 new V1 HIGH (F-v1p3-4); 8 MEDIUM; 8 LOW. Next: V3 plans (5).**
+
 ## Cross-version ledger
 
 ### V1 → V2/V3 (what later plans consume; verified as-produced unless flagged)
